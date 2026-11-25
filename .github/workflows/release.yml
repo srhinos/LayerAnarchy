@@ -27,3 +27,4 @@ jobs:
         with:
           name: LayerAnarchy
           path: .release/*.zip
+          include-hidden-files: true
