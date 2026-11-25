@@ -523,11 +523,11 @@ end
 
 local HANDLERS = { Q = onQ, A = onA, HR = onHR, HA = onHA }
 
-local function onSlotVote(text, k, wasHeard)
+local function onSlotVote(text, k)
   local slot, hour = text:match("^M:(%d+):(%d+)$")
   slot, hour = tonumber(slot), tonumber(hour)
   if not slot or not chan or hour ~= chan.hour or slot <= chan.slot or slot > SLOTS then return end
-  if not wasHeard or not roster.keys[k] then return end
+  if not roster.keys[k] then return end
   local v = votes[slot]
   if not v or v.hour ~= hour then
     v = { hour = hour, n = 0, by = {} }
@@ -538,8 +538,8 @@ local function onSlotVote(text, k, wasHeard)
   if v.n >= VOTES_NEEDED then moveToSlot(hour, slot, "votes") end
 end
 
-local function onGuard(text, sender, k, wasHeard)
-  if not text:find("^O:%d+$") then return onSlotVote(text, k, wasHeard) end
+local function onGuard(text, sender, k)
+  if not text:find("^O:%d+$") then return onSlotVote(text, k) end
   if LA.Gate("voidnet ping", k, PING_GAP) then send(VN, "o", sender, true) end
 end
 
@@ -552,20 +552,16 @@ local function overLimit(k, t)
 end
 
 local function noteHeard(k, sender, t)
-  local h = heard[k]
-  if h then
-    h.name, h.t = sender, t
-    return true
-  end
-  heard[k] = { name = sender, t = t }
-  return false
+  local h = heard[k] or {}
+  heard[k] = h
+  h.name, h.t = sender, t
 end
 
 function NET.OnAddon(_, prefix, text, chatType, sender, k)
   if chatType ~= "WHISPER" or type(text) ~= "string" or #text > TEXT_MAX then return end
   local t = now()
-  local wasHeard = noteHeard(k, sender, t)
-  if prefix == VN then return onGuard(text, sender, k, wasHeard) end
+  noteHeard(k, sender, t)
+  if prefix == VN then return onGuard(text, sender, k) end
   if overLimit(k, t) then return end
   local handler = HANDLERS[text:match("^(%u%u?):1:")]
   if handler then handler(text, sender, k) end

@@ -8,15 +8,16 @@ local LIST_ROOT = "layer"
 local SEG_ROOT = { [947] = "AZ", [1945] = "OL", [2521] = "ZI", [2665] = "ZI", [2524] = "DI" }
 local SEG_FIXED = { [1941] = "OL", [1942] = "OL", [1943] = "OL", [1947] = "OL", [1950] = "OL", [1954] = "OL", [1957] = "OL", [908] = "AZ" }
 local ZONE_FIXED = { [2521] = 2521, [2524] = 2524, [2665] = 2521 }
-local NOT_ASK = { "wts", "wtb", "lfm", "lfg", "what layer", "which layer" }
 local ZONE, MICRO = Enum.UIMapType.Zone, Enum.UIMapType.Micro
 local ADLER_MOD, MAP_CLIMB, HEADERS = 65521, 32, 2
 local CODE_LETTERS, CODE_BASE, CODE_MAX = 4, 26, 456975
 local ALLOW_ANY_FOR, DUPLICATE_FOR = 45, 3
+local DAY, HOUR, MINUTE, DAY_SLACK = 86400, 3600, 60, 60
 
 local names, lists, failed, zoneOfRaw = {}, {}, {}, {}
 local ready, joined = false, false
 local askText, askAt, lastAskAt = {}, {}, -math.huge
+local asking
 
 local function adlerHex(s)
   local a, b = 1, 0
@@ -34,13 +35,14 @@ end
 
 local function buildNames()
   names, lists = {}, {}
-  addList(LIST_ROOT)
   local t, realm = C_DateAndTime.GetCurrentCalendarTime(), GetRealmName()
-  if not (t and t.monthDay and realm) then return end
-  local d, m, y = t.monthDay, t.month, t.year
-  for _, date in ipairs({ format("%02d-%02d-%04d", d, m, y), format("%04d-%02d-%02d", y, m, d), format("%02d-%02d-%04d", m, d, y) }) do
-    addList(LIST_ROOT .. adlerHex(realm .. "-" .. date))
+  if t and t.monthDay and realm then
+    local d, m, y = t.monthDay, t.month, t.year
+    for _, date in ipairs({ format("%02d-%02d-%04d", d, m, y), format("%04d-%02d-%02d", y, m, d), format("%02d-%02d-%04d", m, d, y) }) do
+      addList(LIST_ROOT .. adlerHex(realm .. "-" .. date))
+    end
   end
+  addList(LIST_ROOT)
 end
 
 local function segment()
@@ -101,6 +103,24 @@ local function joinAll()
   end
 end
 
+local scheduleDay
+
+local function newDay()
+  local before = names[1]
+  buildNames()
+  if ready and names[1] ~= before then
+    LA.LeaveChannels(NET.id, lists)
+    joined = false
+    joinAll()
+  end
+  scheduleDay()
+end
+
+scheduleDay = function()
+  local t = C_DateAndTime.GetCurrentCalendarTime()
+  if t and t.hour and t.minute then LA.After(DAY - (t.hour * HOUR + t.minute * MINUTE) + DAY_SLACK, newDay) end
+end
+
 local function postChannel()
   for _, name in ipairs(names) do
     local id = LA.ChannelId(name)
@@ -125,23 +145,16 @@ local function parse(text)
   return zone, s
 end
 
-local function plainAskBlocked(body)
-  for _, word in ipairs(NOT_ASK) do
-    if find(body, "%f[%w]" .. word .. "%f[%W]") then return true end
-  end
-  return false
-end
-
 local function hostAsk(text, sender, needsZone)
   local zone, body = parse(text)
   if not body or (needsZone and not zone) then return end
-  if not zone and plainAskBlocked(body) then return end
+  if not zone and not LA.LayerAsk(body) then return end
   local here
   if zone then
     here = LA.ZoneMapID()
     if zone ~= here and zone ~= alZone() then return end
   end
-  if LA.Host.Can(sender, here) then LA.Host.Invite(sender, NET.id) end
+  if LA.Host.Can(sender, here, true) then LA.Host.Invite(sender, NET.id) end
 end
 
 local function repeated(sender, text)
@@ -156,13 +169,19 @@ local function repeated(sender, text)
   return false
 end
 
+local function ourAskSent()
+  if asking and asking.active then asking.AllowAny(ALLOW_ANY_FOR) end
+  asking = nil
+end
+
 local function onChannel(_, text, sender, _, _, _, _, _, _, base)
-  text = LA.Safe(text)
-  if type(text) ~= "string" or not find(text, "<[Aa][Ll][Zz]%a%a%a%a>") then return end
   base = LA.Safe(base)
   local list = type(base) == "string" and lists[lower(base)]
   sender = LA.Safe(sender)
   if not list or type(sender) ~= "string" or sender == "" then return end
+  if LA.IsMe(sender) then return ourAskSent() end
+  text = LA.Safe(text)
+  if type(text) ~= "string" or not find(text, "<[Aa][Ll][Zz]%a%a%a%a>") then return end
   LA.Stats.Heard(NET.id, LA.NameKey(sender))
   LA.Count(list.seen)
   if repeated(sender, text) then return end
@@ -185,6 +204,7 @@ end
 
 function NET.Init()
   buildNames()
+  scheduleDay()
   LA.On("CHAT_MSG_CHANNEL", onChannel)
   LA.On("CHAT_MSG_GUILD", onGuild)
 end
@@ -210,15 +230,17 @@ end
 
 function NET.Ask() joinAll() end
 
-function NET.Fallback(_, ask)
+function NET.Fallback()
   if LA.ChatLocked() then return nil end
-  local id = postChannel()
-  if not id then
-    joinAll()
-    return nil
-  end
-  local how = LA.PrefillChat(requestLine(), "CHANNEL", id)
-  if how then ask.AllowAny(ALLOW_ANY_FOR) end
+  if postChannel() then return true end
+  joinAll()
+end
+
+function NET.Prefill(_, ask, onEnd)
+  local id = not LA.ChatLocked() and postChannel()
+  if not id then return nil end
+  local how = LA.PrefillChat(requestLine(), "CHANNEL", id, onEnd)
+  if how then asking = ask end
   return how
 end
 

@@ -8,6 +8,7 @@ local LABEL, MOVED_LABEL = "Layer C", "Layer H"
 local HOST, GUEST = "Bram Holloway", "Ines Calder"
 local RESET_NOTICE = { text = "Reset in ~45m", tone = "warn" }
 local REFRESH_NOTICE = { text = "", tone = "warn", button = { text = "Refresh now" } }
+local ASK_NOTICE = { text = "", tone = "swap", button = { text = "Ask AutoLayer" } }
 
 local function waiting(status, border, notice)
   return { status = status, tone = "warn", border = border, notice = notice }
@@ -30,7 +31,8 @@ local STATES = {
   waiting("Paused (invite limit)"),
   swapping("Searching (0 found)"),
   swapping("Asking 6/14 – 0 found"),
-  { status = "Press Enter to ask AutoLayer", tone = "warn", border = "fail", swapText = "Stop" },
+  { status = "Searching (0 found)", tone = "swap", border = "swap", swapText = "Stop", notice = ASK_NOTICE },
+  { status = "Press Enter to send", tone = "warn", border = "fail", swapText = "Stop" },
   swapping("Searching (3 found)", "Ask more"),
   swapping("Invite from " .. HOST),
   swapping("Joining " .. HOST),
@@ -39,13 +41,14 @@ local STATES = {
   swapping("Moved", "Leave", MOVED_LABEL),
   failed("No host found"),
   failed("Same layer – retrying", "Stop"),
+  failed("Not moved – retrying", "Stop"),
+  failed("Other zone – retrying", "Stop"),
   failed("Removed by " .. HOST .. " – retrying", "Stop"),
   failed("Group ended – retrying", "Stop"),
   failed("Moved back – try again"),
   failed("Refused – 16 this hour", nil, RESET_NOTICE),
   failed("In a group"),
   failed("In an instance"),
-  failed("Inviting a player"),
   waiting("Reset in ~45m"),
   waiting("Refresh in 0:47", "fail", REFRESH_NOTICE),
   { status = "Inviting " .. GUEST, tone = "host", border = "host" },

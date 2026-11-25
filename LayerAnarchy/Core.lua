@@ -10,7 +10,7 @@ local UNDEFAULTED = { point = true }
 local OTHERS = {
   "LayerSwap", "BuloLayerForever", "ForeverLayers", "AutoLayer", "LayerHopForAutoLayer",
   "ForeverLayerHop", "VoidLayer", "VoidSweep", "VoidQuest", "VoidGather", "VoidBounty", "VoidDungeon",
-  "PartyLens", "ChangeLayer", "LayerHop", "MerrinxUI_LayerHop", "Meshly", "MyLayerTracker", "LayerNumber",
+  "PartyLens", "ChangeLayer", "LayerHop", "MerrinxUI_LayerHop", "Meshly", "MyLayerTracker",
 }
 local API_CHECKS = {
   "JoinTemporaryChannel", "JoinChannelByName", "JoinPermanentChannel", "GetSelectedDisplayChannel",
@@ -27,8 +27,9 @@ local MIN_WINDOW, MOVES_MAX, LOCKOUTS_MAX, SECONDS_SHOWN = 300, 200, 50, 60
 local COUNTDOWN_MINUTES = { 5, 10, 15, 30, 45 }
 local BORDER_BEFORE, BORDER_AFTER, TRANSFER_SETTLE = 10, 2, 2
 local NOT_FOUND_FOR, OFFLINE_FOR, GATE_MAX, GATE_AGE = 30, 1800, 256, 120
-local BOOK_DAYS, BOOK_MAX, PARTY_SIZE, MAP_CLIMB = 7, 300, 4, 10
+local BOOK_DAYS, BOOK_MAX, PARTY_SIZE, RAID_SIZE, MAP_CLIMB = 7, 300, 4, 40, 10
 local CHANNEL_DELAY, JOIN_TIMEOUT, LOW_SLOTS, RELOCATE_AFTER = 10, 10, 5, 30
+local QUIET_FOR, GROUP_QUIET_FOR = 150, 60
 local MAX_WINDOWS = Constants.ChatFrameConstants.MaxChatWindows
 local ZONE = Enum.UIMapType.Zone
 local RESULT = Enum.SendAddonMessageResult
@@ -37,6 +38,13 @@ local ROUTINE_RESULTS = {
   [RESULT.AddOnMessageLockdown] = true, [RESULT.TargetOffline] = true,
 }
 local TARGET_ATTRIBUTE = { WHISPER = "tellTarget", CHANNEL = "channelTarget" }
+local PREFILL_ATTRIBUTES = { "chatType", "stickyType", "channelTarget", "tellTarget" }
+local NAMED_LINES = {
+  "ERR_INVITE_PLAYER_S", "ERR_JOINED_GROUP_S", "ERR_LEFT_GROUP_S", "ERR_DECLINE_GROUP_S", "ERR_ALREADY_IN_GROUP_S",
+  "ERR_BAD_PLAYER_NAME_S", "ERR_INVITED_TO_GROUP_SS", "ERR_INVITED_ALREADY_IN_GROUP_SS",
+}
+local GROUP_LINES = { "ERR_GROUP_DISBANDED", "ERR_LEFT_GROUP_YOU", "ERR_NOT_IN_GROUP" }
+local LOOT_LINES = "^ERR_SET_LOOT_"
 local JOINED = { YOU_CHANGED = true, YOU_JOINED = true }
 local REFUSED = { WRONG_PASSWORD = true, BANNED = true }
 local MAP_EVENTS = { "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "PLAYER_ENTERING_WORLD" }
@@ -136,7 +144,7 @@ function LA.SetSetting(key, value)
 end
 
 function LA.ToggleHelp()
-  if LA.Debug.Previewing() then return end
+  if LA.disabled or LA.Debug.Previewing() then return end
   LA.SetSetting("help", not LA.Setting("help"))
 end
 
@@ -246,11 +254,60 @@ function LA.Offline(key)
   return at ~= nil and GetTime() - at < OFFLINE_FOR
 end
 
-local function buildNotFoundPattern()
-  local s = ERR_CHAT_PLAYER_NOT_FOUND_S
-  if type(s) ~= "string" or not s:find("%s", 1, true) then return nil end
+local function linePattern(s)
+  if type(s) ~= "string" or s == "" then return nil end
   local escaped = s:gsub("([%^%$%(%)%%%.%[%]%*%+%-%?])", "%%%1")
-  return "^" .. escaped:gsub("%%%%s", "(.+)", 1) .. "$"
+  local named = escaped:gsub("%%%%s", "(.-)", 1)
+  return "^" .. named:gsub("%%%%s", ".-") .. "$"
+end
+
+local groupLines = {}
+
+local function addGroupLine(kind, named)
+  local pattern = linePattern(_G[kind])
+  if pattern then groupLines[#groupLines + 1] = { kind = kind, pattern = pattern, named = named } end
+end
+
+local function buildGroupLines()
+  for _, kind in ipairs(NAMED_LINES) do addGroupLine(kind, true) end
+  for _, kind in ipairs(GROUP_LINES) do addGroupLine(kind, false) end
+  for kind in pairs(_G) do
+    if type(kind) == "string" and kind:find(LOOT_LINES) then addGroupLine(kind, false) end
+  end
+end
+
+function LA.GroupLine(text)
+  if type(text) ~= "string" then return nil end
+  for _, line in ipairs(groupLines) do
+    local name = text:match(line.pattern)
+    if name then return line.kind, line.named and LA.NameKey(name) or nil end
+  end
+end
+
+local quietAt, quietSweptAt, groupQuietAt = {}, 0, -math.huge
+
+function LA.Quiet(name, on)
+  local now, key = GetTime(), LA.NameKey(name)
+  if now - quietSweptAt > QUIET_FOR then
+    quietSweptAt = now
+    for k, at in pairs(quietAt) do
+      if now - at > QUIET_FOR then quietAt[k] = nil end
+    end
+  end
+  if on == false then
+    if key then quietAt[key] = nil end
+    return
+  end
+  if key then quietAt[key] = now end
+  groupQuietAt = now
+end
+
+local function hideGroupLine(_, _, msg)
+  local kind, key = LA.GroupLine(LA.Safe(msg))
+  if not kind then return false end
+  local now = GetTime()
+  if key then return quietAt[key] ~= nil and now - quietAt[key] < QUIET_FOR end
+  return now - groupQuietAt < GROUP_QUIET_FOR
 end
 
 local function hideNotFound(_, _, msg)
@@ -274,27 +331,68 @@ function LA.ChatLocked()
   return ok and locked == true
 end
 
-local prefilled = {}
+local prefill = {}
 
-function LA.PrefillChat(text, chatType, target)
+local function endPrefill()
+  local box = prefill.box
+  if not box then return end
+  prefill.box = nil
+  for _, name in ipairs(PREFILL_ATTRIBUTES) do box:SetAttribute(name, prefill.saved[name]) end
+  pcall(box.UpdateHeader, box)
+  local onEnd = prefill.onEnd
+  prefill.onEnd = nil
+  if onEnd then LA.Try("prefill", onEnd, prefill.sent) end
+  LA.Refresh()
+end
+
+local function settlePrefill()
+  local box = prefill.box
+  if box and not (box:IsShown() and ChatFrameUtil.GetActiveWindow() == box) then endPrefill() end
+end
+
+local function onPreSend(_, box) if box == prefill.box then prefill.sent = true end end
+
+local function onBoxClosed(_, box) if box == prefill.box then LA.After(0, settlePrefill) end end
+
+local PREFILL_EVENTS = {
+  ["ChatFrame.OnEditBoxPreSendText"] = onPreSend,
+  ["ChatFrame.OnEditBoxHide"] = onBoxClosed,
+  ["ChatFrame.OnEditBoxFocusLost"] = onBoxClosed,
+}
+
+local function watchPrefill()
+  if prefill.watching then return end
+  prefill.watching = true
+  for event, fn in pairs(PREFILL_EVENTS) do EventRegistry:RegisterCallback(event, fn, prefill) end
+end
+
+function LA.PrefillChat(text, chatType, target, onEnd)
   local typing = ChatFrameUtil.GetActiveWindow()
   if typing and (typing:GetText() or "") ~= "" then return nil end
+  watchPrefill()
+  endPrefill()
+  local box = ChatFrameUtil.ChooseBoxForSend(DEFAULT_CHAT_FRAME)
+  local saved = {}
+  for _, name in ipairs(PREFILL_ATTRIBUTES) do saved[name] = box:GetAttribute(name) end
   ChatFrameUtil.OpenChat(text, DEFAULT_CHAT_FRAME)
-  local box = ChatFrameUtil.GetActiveWindow() or DEFAULT_CHAT_FRAME.editBox
+  box = ChatFrameUtil.GetActiveWindow() or box
   box:SetAttribute("chatType", chatType)
   local attribute = TARGET_ATTRIBUTE[chatType]
   if attribute then box:SetAttribute(attribute, target) end
   pcall(box.UpdateHeader, box)
-  prefilled.box, prefilled.text = box, text
+  prefill.box, prefill.text, prefill.saved, prefill.onEnd, prefill.sent = box, text, saved, onEnd, false
+  LA.Refresh()
   return "prefilled"
 end
 
 function LA.ClearPrefill()
-  local box, text = prefilled.box, prefilled.text
-  prefilled.box = nil
-  if not (box and box:IsShown() and box:GetText() == text) then return end
-  box:SetText("")
-  ChatFrameUtil.DeactivateChat(box)
+  local box = prefill.box
+  if not box then return end
+  if box:GetText() == prefill.text then
+    box:SetText("")
+    ChatFrameUtil.DeactivateChat(box)
+  end
+  endPrefill()
 end
 
 local joins, relocated = {}, {}
@@ -461,13 +559,17 @@ local party, partyStale, leader = {}, true, nil
 local function scanParty()
   wipe(party)
   leader, partyStale = nil, false
-  for i = 1, PARTY_SIZE do
-    local unit = "party" .. i
+  local raid, me = IsInRaid(), LA.MyKey()
+  for i = 1, raid and RAID_SIZE or PARTY_SIZE do
+    local unit = (raid and "raid" or "party") .. i
     if UnitExists(unit) then
       local name = LA.Safe(GetUnitName(unit, true))
       if not name or name == UNKNOWNOBJECT then partyStale = true end
-      party[LA.NameKey(name) or unit] = unit
-      if UnitIsGroupLeader(unit) then leader = unit end
+      local key = LA.NameKey(name)
+      if key ~= me then
+        party[key or unit] = unit
+        if UnitIsGroupLeader(unit) then leader = unit end
+      end
     end
   end
 end
@@ -492,6 +594,7 @@ end
 
 function LA.LeaveGroup(why)
   LA.Log("leave", why)
+  LA.Quiet()
   pcall(C_PartyInfo.LeaveParty)
 end
 
@@ -658,13 +761,15 @@ function LA.WakeIn(sec)
 end
 
 local flash = { untilAt = 0 }
-local refreshAt
+local refreshAt, offBy
 
 function LA.Flash(text, notice, seconds)
   flash.text, flash.untilAt = text, GetTime() + (seconds or FLASH_FOR)
   flash.notice = notice and { text = notice, tone = "warn" } or nil
   LA.Refresh()
 end
+
+function LA.ClearFlash() flash.untilAt = 0 end
 
 local function confirmRefresh() pcall(C_PlayerInteractionManager.ShardTransferConfirm) end
 
@@ -708,7 +813,7 @@ function LA.View()
   resetView(v)
   if LA.Debug.Fill(v) then return v end
   if LA.disabled then
-    v.status, v.tone, v.swapEnabled = "Off – " .. LA.disabled .. " loaded", "off", false
+    v.status, v.tone, v.swapEnabled, v.help = "Off – " .. offBy .. " loaded", "off", false, false
   elseif not LA.Swap.View(v) then
     idleView(v, GetTime())
   end
@@ -725,8 +830,17 @@ end
 LA.On("ZONE_CHANGED_NEW_AREA", zoneChanged)
 LA.On("PLAYER_ENTERING_WORLD", zoneChanged)
 
+local function evictionLeft() return tonumber(LA.Safe(GetEvictionTimeRemaining())) or 0 end
+
 local function onTransferImminent()
-  refreshAt = GetTime() + (tonumber(LA.Safe(GetEvictionTimeRemaining())) or 0)
+  refreshAt = GetTime() + evictionLeft()
+  LA.Refresh()
+end
+
+local function readEviction()
+  local left = evictionLeft()
+  if left <= 0 then return end
+  refreshAt = GetTime() + left
   LA.Refresh()
 end
 
@@ -735,10 +849,13 @@ local function onTransferCancelled()
   LA.Refresh()
 end
 
-local function judgeTransfer(at, wasRefresh)
+function LA.BorderAt(at)
   local sinceZone = at - lastZoneAt
-  local border = (sinceZone >= 0 and sinceZone <= BORDER_BEFORE) or (sinceZone < 0 and -sinceZone <= BORDER_AFTER)
-  if border and not wasRefresh then return end
+  return (sinceZone >= 0 and sinceZone <= BORDER_BEFORE) or (sinceZone < 0 and -sinceZone <= BORDER_AFTER)
+end
+
+local function judgeTransfer(at, wasRefresh)
+  if LA.BorderAt(at) and not wasRefresh then return end
   LA.Moved(wasRefresh and "world refresh" or "transfer")
 end
 
@@ -755,7 +872,8 @@ local function otherLoaded()
   for _, name in ipairs(OTHERS) do
     if C_AddOns.IsAddOnLoaded(name) then found[#found + 1] = name end
   end
-  if #found > 0 then return table.concat(found, ", ") end
+  if #found == 0 then return nil end
+  return table.concat(found, ", "), #found == 1 and found[1] or (#found .. " layer addons")
 end
 
 local function startNetwork(net)
@@ -771,8 +889,10 @@ end
 local function openChannels() LA.Each("OnChannels") end
 
 local function watchChat()
-  notFoundPattern = buildNotFoundPattern()
+  notFoundPattern = linePattern(ERR_CHAT_PLAYER_NOT_FOUND_S)
   if notFoundPattern then ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", hideNotFound) end
+  buildGroupLines()
+  ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", hideGroupLine)
   for _, event in ipairs({ "CHAT_MSG_CHANNEL_NOTICE", "CHAT_MSG_CHANNEL_NOTICE_USER" }) do
     ChatFrameUtil.AddMessageEventFilter(event, isOurNotice)
     LA.On(event, onChannelNotice)
@@ -786,10 +906,11 @@ local function watchTransfers()
   LA.On("SHARD_TRANSFER_IMMINENT", onTransferImminent)
   LA.On("SHARD_TRANSFER_CANCELLED", onTransferCancelled)
   LA.On("SHARD_TRANSFER", onTransfer)
+  LA.On("PLAYER_ENTERING_WORLD", readEviction)
 end
 
 local function start()
-  LA.disabled = otherLoaded()
+  LA.disabled, offBy = otherLoaded()
   if LA.disabled then
     print(TITLE .. " off: " .. LA.disabled .. " loaded.")
   else
@@ -903,9 +1024,9 @@ local function printDiag()
   local counted = countsText()
   if counted ~= "" then print("counts: " .. counted) end
   local t = LA.db.tallies
-  print(string.format("hosted: moved %d, stuck %d, no-show %d · flying: moved %d, stuck %d, no-show %d",
-    t["host.moved"] or 0, t["host.stuck"] or 0, t["host.noshow"] or 0,
-    t["fly.moved"] or 0, t["fly.stuck"] or 0, t["fly.noshow"] or 0))
+  print(string.format("hosted: moved %d, stuck %d, same %d, no-show %d · flying: moved %d, stuck %d, same %d, no-show %d",
+    t["host.moved"] or 0, t["host.stuck"] or 0, t["host.same"] or 0, t["host.noshow"] or 0,
+    t["fly.moved"] or 0, t["fly.stuck"] or 0, t["fly.same"] or 0, t["fly.noshow"] or 0))
   printLog(LOG_SHOWN)
 end
 
@@ -938,9 +1059,18 @@ local COMMANDS = {
 
 function LA.Command(text, fn) COMMANDS[text] = fn end
 
+local function printCommands()
+  local names = {}
+  for name in pairs(COMMANDS) do names[#names + 1] = name end
+  table.sort(names)
+  LA.Print("/la, /la " .. table.concat(names, ", /la "))
+end
+
 SLASH_LAYERANARCHY1 = "/la"
 SLASH_LAYERANARCHY2 = "/layeranarchy"
 SlashCmdList.LAYERANARCHY = function(msg)
-  local command = COMMANDS[(msg or ""):lower():match("^%s*(.-)%s*$")] or LayerAnarchy_Toggle
-  command()
+  local text = (msg or ""):lower():match("^%s*(.-)%s*$")
+  if text ~= "" then return (COMMANDS[text] or printCommands)() end
+  LayerAnarchy_Toggle()
+  if LA.Setting("hidden") then LA.Print("hidden – /la to show") end
 end

@@ -124,7 +124,7 @@ end
 
 local function hosting(row, prefix, asked)
   row.asked, row.invited, row.moved = asked, count(prefix .. "invited"), count(prefix .. "moved")
-  row.failed = count(prefix .. "stuck") + count(prefix .. "noshow")
+  row.failed = count(prefix .. "stuck") + count(prefix .. "noshow") + count(prefix .. "same")
 end
 
 function Stats.View()

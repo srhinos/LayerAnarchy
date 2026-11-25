@@ -5,24 +5,24 @@ local PREFIX = NET.prefixes[1]
 local RULES_TAG = "r3"
 local BURST, ROUND_GAP, MAX_ASK = 8, 1, 49
 local HEARD_GAP = 10
-local WHO_WAIT, WHO_REUSE, WHO_MAX = 5, 10, 50
+local WHO_WAIT, WHO_LATE_FOR, WHO_REUSE, WHO_MAX = 5, 30, 10, 50
 local LAYER_ID_MAX = 24
 local THROTTLED = Enum.SendAddonMessageResult.AddonMessageThrottle
 local WHO_ORIGIN = Enum.SocialWhoOrigin.Social
-local BLOCKED_PREFIXES = { "^%[NWB%]", "^%[AutoLayer%]" }
+local BLOCKED_PREFIXES = { "^%[nwb%]", "^%[autolayer%]" }
 local BLOCKED_PHRASES = { "what layer", "which layer", "how many layer", "auto inv", "pst for" }
 local BLOCKED_WORDS = {}
 for word in ("wts wtb wtt lfm lfg guild raid enchant enchanting recruiting selling buying worldbuffs autoinv"):gmatch("%a+") do
   BLOCKED_WORDS[word] = true
 end
-local ASK_WORDS = { inv = true, invite = true, layer = true, layers = true }
+local LAYER_WORDS = { layer = true, layers = true }
 
 local who = { round = 0 }
 local classes
 local onWhoList
 
 local function closePanel()
-  if LFGParentFrame:IsShown() then pcall(HideUIPanel, LFGParentFrame) end
+  if LFGParentFrame:IsShown() and not InCombatLockdown() then pcall(HideUIPanel, LFGParentFrame) end
 end
 
 local function onPanelShow()
@@ -53,17 +53,31 @@ local function whoFilters(zone, round)
   return filters
 end
 
-local function whoDone(names, why)
-  local p = who.pending
-  if not p then return end
+local function closeWho(p)
+  if who.pending ~= p then return end
   who.pending = nil
   LA.Off("WHO_LIST_UPDATE", onWhoList)
   C_FriendList.SetWhoToUi(p.panelWasOpen)
-  if names then who.last = { zone = p.zone, at = GetTime(), names = names } end
-  for _, callback in ipairs(p.callbacks) do LA.Try("who", callback, names, why) end
 end
 
-local function whoTimeout(p) if who.pending == p then whoDone(nil, "timeout") end end
+local function answer(p, names, why)
+  local callbacks = p.callbacks
+  p.callbacks = {}
+  if names then who.last = { zone = p.zone, at = GetTime(), names = names } end
+  for _, callback in ipairs(callbacks) do LA.Try("who", callback, names, why) end
+end
+
+local function whoDone(p, names, why)
+  closeWho(p)
+  answer(p, names, why)
+end
+
+local function whoTimeout(p)
+  if who.pending ~= p or p.late then return end
+  p.late = true
+  answer(p, nil, "timeout")
+  LA.After(WHO_LATE_FOR, closeWho, p)
+end
 
 local function advanceRound(num, total)
   who.capped = total > num or num >= WHO_MAX
@@ -93,10 +107,11 @@ onWhoList = function()
     who.answeredAt = GetTime()
     if who.shownAt == who.answeredAt then C_Timer.After(0, closePanel) end
   end
+  if p.late then return closeWho(p) end
   local num, total = C_FriendList.GetNumWhoResults()
   num = tonumber(LA.Safe(num)) or 0
   advanceRound(num, tonumber(LA.Safe(total)) or num)
-  whoDone(whoNames(num, p.zoneName))
+  whoDone(p, whoNames(num, p.zoneName))
 end
 
 local function replyLater(callback, names, why) LA.After(0, callback, names, why) end
@@ -104,9 +119,14 @@ local function replyLater(callback, names, why) LA.After(0, callback, names, why
 function LA.Who(zone, callback)
   zone = tonumber(zone)
   if not zone then return replyLater(callback, nil, "error") end
+  if InCombatLockdown() then return replyLater(callback, nil, "combat") end
   local last = who.last
   if last and last.zone == zone and GetTime() - last.at < WHO_REUSE then return replyLater(callback, last.names) end
   local p = who.pending
+  if p and p.late then
+    closeWho(p)
+    p = nil
+  end
   if p then
     if p.zone ~= zone then return replyLater(callback, nil, "busy") end
     p.callbacks[#p.callbacks + 1] = callback
@@ -127,7 +147,7 @@ function LA.Who(zone, callback)
   local ok, err = pcall(C_FriendList.SendWho, query, WHO_ORIGIN, whoFilters(zone, who.round))
   if not ok then
     LA.Log("error", "who", err)
-    return whoDone(nil, "error")
+    return whoDone(p, nil, "error")
   end
   LA.After(WHO_WAIT, whoTimeout, p)
 end
@@ -323,28 +343,27 @@ local function hostAsk(text, sender, key)
   if not LA.Host.Invite(sender, NET.id) then heard(sender, key, "-", true) end
 end
 
-local function typedAsk(text)
-  if not (text:find("[Ii][Nn][Vv]") or text:find("[Ll][Aa][Yy][Ee][Rr]")) then return false end
-  for _, pattern in ipairs(BLOCKED_PREFIXES) do
-    if text:find(pattern) then return false end
-  end
+function LA.LayerAsk(text)
   local low = text:lower()
+  for _, pattern in ipairs(BLOCKED_PREFIXES) do
+    if low:find(pattern) then return false end
+  end
   for _, phrase in ipairs(BLOCKED_PHRASES) do
     if low:find(phrase, 1, true) then return false end
   end
   local hit = false
   for word in low:gmatch("%a+") do
     if BLOCKED_WORDS[word] then return false end
-    if ASK_WORDS[word] then hit = true end
+    if LAYER_WORDS[word] then hit = true end
   end
   return hit
 end
 
 local function onWhisper(_, text, sender)
   text, sender = LA.Safe(text), LA.Safe(sender)
-  if type(text) ~= "string" or type(sender) ~= "string" or not typedAsk(text) then return end
+  if type(text) ~= "string" or type(sender) ~= "string" or not LA.LayerAsk(text) then return end
   local tag = parseTag(text)
-  if LA.Host.Can(sender, tag and tag.zone) then LA.Host.Invite(sender, NET.id) end
+  if LA.Host.Can(sender, tag and tag.zone, true) then LA.Host.Invite(sender, NET.id) end
 end
 
 function NET.OnAddon(_, _, text, chatType, sender, key)
