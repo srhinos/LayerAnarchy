@@ -1,0 +1,8 @@
+<Bindings>
+	<Binding name="LAYERANARCHY_SWAP" header="LAYERANARCHY" category="BINDING_HEADER_LAYERANARCHY">
+		LayerAnarchy_Swap()
+	</Binding>
+	<Binding name="LAYERANARCHY_TOGGLE" category="BINDING_HEADER_LAYERANARCHY">
+		LayerAnarchy_Toggle()
+	</Binding>
+</Bindings>

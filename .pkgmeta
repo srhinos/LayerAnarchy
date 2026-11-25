@@ -1,0 +1,11 @@
+package-as: LayerAnarchy
+
+move-folders:
+  LayerAnarchy/LayerAnarchy: LayerAnarchy
+
+ignore:
+  - README.md
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markup-type: markdown
