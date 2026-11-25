@@ -5,6 +5,7 @@
 ## Version: @project-version@
 ## X-License: GPL-3.0
 ## X-Curse-Project-ID: 1829966
+## X-Wago-ID: bGoYxp60
 ## SavedVariables: LayerAnarchyDB
 
 Core.lua

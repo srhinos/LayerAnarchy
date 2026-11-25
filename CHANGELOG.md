@@ -1,5 +1,9 @@
 # Layer Anarchy
 
+## 0.1.1
+
+- Now on Wago.
+
 ## 0.1.0
 
 First release.
