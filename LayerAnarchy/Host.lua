@@ -132,10 +132,12 @@ function Host.Check()
     if at and (not due or at < due) then due = at end
   end
   local last = lastMove()
-  if last and now - last >= RELEASE_AFTER then
-    LA.LeaveGroup("released")
-  elseif last then
-    due = math.min(due or math.huge, last + RELEASE_AFTER)
+  if last and groupIsOurs() then
+    if now - last >= RELEASE_AFTER then
+      LA.LeaveGroup("released")
+    else
+      due = math.min(due or math.huge, last + RELEASE_AFTER)
+    end
   end
   wakeAt(due)
   LA.Refresh()
