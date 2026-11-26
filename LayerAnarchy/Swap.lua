@@ -302,7 +302,7 @@ local function askingStatus(s, v)
 end
 
 local function movedStatus(s)
-  if not (LA.Setting("auto") and s.leaveAt and not s.leftAt) then return "Moved" end
+  if not (LA.Setting("auto") and s.leaveAt) then return "Moved" end
   local wait = s.leaveAt - GetTime()
   local shown = math.max(0, math.ceil(wait))
   if shown > 0 then LA.WakeIn(wait - (shown - 1)) end
@@ -416,21 +416,14 @@ local function onJoined()
   LA.Refresh()
 end
 
-local function finishMoved(s)
-  if cur ~= s then return end
-  if LA.LayerEpoch() ~= s.movedEpoch then return finish("moved back", "Moved back – try again") end
-  finish("moved")
-end
-
-local function watchMovedBack(s)
-  s.leftAt = GetTime()
-  LA.After(MOVED_BACK_WATCH + SETTLE_MARGIN, finishMoved, s)
-end
-
 local function leaveAfterMove(s)
-  if cur ~= s or s.phase ~= "moved" or s.leftAt or not IsInGroup() then return end
-  watchMovedBack(s)
+  if cur ~= s or s.phase ~= "moved" or not IsInGroup() then return end
   leave(s, "moved")
+end
+
+local function finishMoved(s)
+  if LA.LayerEpoch() ~= s.epochBefore then LA.WatchMoveBack(s.epochBefore, MOVED_BACK_WATCH + SETTLE_MARGIN) end
+  finish("moved")
 end
 
 local function onTransfer()
@@ -439,8 +432,9 @@ local function onTransfer()
   setPhase(s, "moved")
   LA.Each("StopAsk", s)
   LA.Limit.Moved()
+  s.epochBefore = LA.LayerEpoch()
   LA.Moved("swap")
-  s.movedEpoch = LA.LayerEpoch()
+  LA.WatchMoveBack(s.epochBefore, LEAVE_AFTER + MOVED_BACK_WATCH + SETTLE_MARGIN)
   if LA.Setting("auto") then
     s.leaveAt = GetTime() + LEAVE_AFTER
     LA.After(LEAVE_AFTER, leaveAfterMove, s)
@@ -453,10 +447,7 @@ local function removedByHost() return removedAt ~= nil and GetTime() - removedAt
 local function onGroupLeft()
   local s = cur
   if not s then return end
-  if s.phase == "moved" then
-    if not s.leftAt then watchMovedBack(s) end
-    return
-  end
+  if s.phase == "moved" then return finishMoved(s) end
   if s.phase ~= "joined" or s.leaving then return end
   if removedByHost() then
     retry("removed", "Removed by " .. s.host .. " – retrying")

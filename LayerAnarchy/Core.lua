@@ -876,8 +876,23 @@ local function crossedBorder(at)
   return (sinceZone >= 0 and sinceZone <= BORDER_BEFORE) or (sinceZone < 0 and -sinceZone <= BORDER_AFTER)
 end
 
+local backWatch
+
+function LA.WatchMoveBack(epoch, seconds) backWatch = { epoch = epoch, untilAt = GetTime() + seconds } end
+
+local function movedBack()
+  local w = backWatch
+  backWatch = nil
+  if not (w and GetTime() < w.untilAt) then return false end
+  LA.char.epoch = w.epoch
+  LA.Log("moved", "moved back", LA.Label())
+  LA.Flash("Moved back – try again")
+  return true
+end
+
 local function judgeTransfer(at, wasRefresh)
   if crossedBorder(at) and not wasRefresh then return end
+  if not wasRefresh and movedBack() then return end
   LA.Moved(wasRefresh and "world refresh" or "transfer")
 end
 
