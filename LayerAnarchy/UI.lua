@@ -987,6 +987,12 @@ function UI.Focus()
   pad.Select(current == hud and hud or box.swap)
 end
 
+function pad.OnFocusRequest(manager, wanted)
+  if not wanted or pad.listed or manager.isUIFocused or manager:GetShownFrameCount() > 0 then return end
+  UIErrorsFrame:Clear()
+  UI.Focus()
+end
+
 function UI.SendKey() return InputUtil.IsGamepadUIEnabled() and pad.Icon() or "Enter" end
 
 function UI.Init()
@@ -1002,6 +1008,9 @@ function UI.Init()
   LA.On("ADDON_RESTRICTION_STATE_CHANGED", pad.OnRestriction)
   LA.On("INPUT_DEVICE_INTERFACE_TRANSITION", LA.Refresh)
   EventRegistry:RegisterCallback("Gamepad.RefreshFrameFocus", Later, pad)
+  if GamepadMode and GamepadMode.FrameControlsManager then
+    hooksecurefunc(GamepadMode.FrameControlsManager, "SetUIFocusState", function(...) LA.Try("pad", pad.OnFocusRequest, ...) end)
+  end
   LA.Command("diag pad", pad.Print)
   Place()
   UI.Refresh()
