@@ -1075,12 +1075,11 @@ local function printPerf()
   print(string.format("memory: %.0f KB", GetAddOnMemoryUsage(ADDON)))
 end
 
-local function setHelp(on) return function() LA.SetSetting("help", on) end end
+local function setHost(on) return function() LA.SetSetting("help", on) end end
 
 local COMMANDS = {
   swap = LayerAnarchy_Swap, focus = LayerAnarchy_Focus,
-  ["host on"] = setHelp(true), ["host off"] = setHelp(false),
-  ["help on"] = setHelp(true), ["help off"] = setHelp(false),
+  ["host on"] = setHost(true), ["host off"] = setHost(false),
   diag = printDiag, ["diag perf"] = printPerf,
 }
 

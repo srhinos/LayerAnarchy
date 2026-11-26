@@ -186,9 +186,10 @@ end
 local function channelFrameOpen() return ChannelFrame ~= nil and ChannelFrame:IsShown() end
 
 local function displayIndex(name)
+  local wanted = name:lower()
   for i = 1, GetNumDisplayChannels() do
     local cname, header, _, _, count, active = GetChannelDisplayInfo(i)
-    if not header and cname == name then return i, count, active end
+    if not header and cname and cname:lower() == wanted then return i, count, active end
   end
 end
 
