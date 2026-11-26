@@ -5,6 +5,7 @@ move-folders:
 
 ignore:
   - README.md
+  - LayerAnarchy/Debug.lua
 
 manual-changelog:
   filename: CHANGELOG.md
