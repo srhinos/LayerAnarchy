@@ -609,7 +609,7 @@ function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur = nil end end
 
 function NET.OnSwapResult(_, _, result, host)
   local key = LA.NameKey(host)
-  if key and (result == "moved" or result == "same") then census[key] = nil end
+  if key and result == "moved" then census[key] = nil end
 end
 
 function NET.OnHostFailed(_, ask, why, host)

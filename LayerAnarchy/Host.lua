@@ -88,6 +88,8 @@ end
 local function blocked()
   if LA.disabled or not LA.Setting("help") then return "off" end
   if IsInInstance() then return "instance" end
+  -- forming a group while the layer is closing makes the game move us at once
+  if LA.Closing() then return "closing" end
   if UnitOnTaxi("player") and not LA.Setting("hostWhileFlying") then return "flying" end
   if LA.Swap.Busy() then return "swapping" end
   local ours, liftsAt = groupIsOurs()

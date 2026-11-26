@@ -1,6 +1,6 @@
 ## Interface: 16001
 ## Title: Layer Anarchy
-## Notes: Swap layers through every layer network on WoW Forever. No rules but the game's.
+## Notes: Swap layers through every layer network on WoW Forever.
 ## Author: srhinos
 ## Version: @project-version@
 ## X-License: GPL-3.0

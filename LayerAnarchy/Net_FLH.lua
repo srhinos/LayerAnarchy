@@ -403,7 +403,7 @@ function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur = nil end end
 
 function NET.OnSwapResult(_, _, result, hostName)
   local key = LA.NameKey(hostName)
-  if key and (result == "same" or result == "moved") then avoid[key] = LA.LayerEpoch() end
+  if key and result == "moved" then avoid[key] = LA.LayerEpoch() end
 end
 
 function NET.OnHostFailed(_, ask, why, hostName)

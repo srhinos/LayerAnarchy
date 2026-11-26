@@ -3,7 +3,7 @@
 ## 0.1.2
 
 **Layers you can recognise and go back to**
-- Layer letters now mean something. Layer Anarchy recognises a layer from the creatures around you, so coming back to one shows its old letter and how long you were away ("Layer B · back after 4m"). A "?" means it hasn't confirmed which layer yet.
+- Layer letters now mean something. Layer Anarchy recognises a layer from the creatures around you, so coming back to one shows its old letter and how long you were away ("Layer B · back after 4m"). A "?" means it hasn't confirmed which layer yet; while it shows, nameplates flash on for a moment now and then to read the creatures around you.
 - Click the layer name for a list of the layers in your zone, when you were last on each, and the hosts known to be there. Pick one to swap straight back to it.
 
 **Swapping**
@@ -34,7 +34,7 @@ First release.
 
 - One-click layer swap through LayerSwap, AutoLayer, VoidNet and Forever Layer Hop at once.
 - Hosts for all four networks.
-- No rules but the game's: swap in combat, while dead, whenever the game allows.
+- Swap in combat, while dead, whenever the game allows.
 - Learns the real hourly swap limit from your own swaps and shows a reset countdown after a refusal.
 - Network panel: who's on each network, your swaps and hosting, for the last hour or the session.
 - Turns itself off if another layer addon is loaded.

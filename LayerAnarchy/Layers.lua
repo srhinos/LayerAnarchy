@@ -10,7 +10,7 @@ local MINUTE, HOUR = 60, 3600
 local SHOW = {
   nameplateShowAll = "1", nameplateShowEnemies = "1", nameplateShowFriendlyNPCs = "1", nameplateShowFriendlyPlayers = "0",
 }
-local CROWD_CVAR, CROWD, REVEAL_EVERY, REVEAL_WAIT = "nameplateShowFriendlyPlayers", 20, 10, 1
+local CROWD_CVAR, CROWD, REVEAL_EVERY, REVEAL_WAIT, SWEEPS = "nameplateShowFriendlyPlayers", 20, 10, 1, 4
 local UNLOCK_EVENTS = { "PLAYER_REGEN_ENABLED", "ADDON_RESTRICTION_STATE_CHANGED" }
 local KINDS = { Creature = true, Vehicle = true }
 local GUID_FIELDS = "^(%a+)%-%d+%-(%d+)%-%d+%-(%d+)%-"
@@ -23,6 +23,7 @@ local NO_LAYER = "Layer –"
 local EMPTY = {}
 
 local realm, here, last, holdUntil, sweepTimer, revealer
+local sweeps = 0
 local reach, readings, rows = {}, {}, {}
 
 local function readingOf(guid)
@@ -290,7 +291,7 @@ end
 local sweep
 
 local function sweepAgain()
-  if sweepTimer or revealer:IsShown() or not unsettled() or LA.CombatLocked() then return end
+  if sweepTimer or sweeps >= SWEEPS or revealer:IsShown() or not unsettled() or LA.CombatLocked() then return end
   sweepTimer = LA.After(REVEAL_EVERY, sweep)
 end
 
@@ -307,7 +308,8 @@ end
 local function crowded()
   local n = 0
   for _, plate in ipairs(C_NamePlate.GetNamePlates() or EMPTY) do
-    local guid = LA.Safe(UnitGUID(plate.namePlateUnitToken))
+    local unit = plate.namePlateUnitToken
+    local guid = unit and LA.Safe(UnitGUID(unit))
     if guid and guid:find("^Player%-") then n = n + 1 end
   end
   return n >= CROWD
@@ -330,7 +332,7 @@ local function reveal()
 end
 
 sweep = function()
-  sweepTimer = nil
+  sweepTimer, sweeps = nil, sweeps + 1
   if unsettled() and not LA.CombatLocked() and reveal() then return end
   seePlates()
   sweepAgain()
@@ -343,6 +345,7 @@ end
 
 local function sweepSoon(after)
   if sweepTimer then sweepTimer:Cancel() end
+  sweeps = 0
   sweepTimer = LA.After(after or SWEEP_AFTER, sweep)
 end
 

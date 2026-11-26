@@ -864,6 +864,8 @@ end
 
 local function readEviction() if evictionLeft() > 0 then onTransferImminent() end end
 
+function LA.Closing() return refreshAt ~= nil and refreshAt > GetTime() end
+
 local function onTransferCancelled()
   refreshAt = nil
   LA.Refresh()
