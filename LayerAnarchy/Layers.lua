@@ -17,6 +17,7 @@ local GUID_FIELDS = "^(%a+)%-%d+%-(%d+)%-%d+%-(%d+)%-"
 local UNIT_EVENTS = {
   UPDATE_MOUSEOVER_UNIT = "mouseover", PLAYER_TARGET_CHANGED = "target", PLAYER_SOFT_ENEMY_CHANGED = "softenemy",
   PLAYER_SOFT_INTERACT_CHANGED = "softinteract", PLAYER_SOFT_FRIEND_CHANGED = "softfriend",
+  PLAYER_FOCUS_CHANGED = "focus", PLAYER_INTERACTION_MANAGER_FRAME_SHOW = "npc",
 }
 local NO_LAYER = "Layer –"
 local EMPTY = {}
