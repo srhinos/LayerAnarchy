@@ -1,5 +1,7 @@
 # Layer Anarchy
 
+![Layer Anarchy](.github/hero.png)
+
 Every layer addon on Forever runs its own network, so you only reach the hosts who use the same addon you do. The most popular one also decides when you're allowed to swap: not in combat, not while dead, not right after a fight, and only as many times an hour as the addon thinks you should.
 
 I wanted one that talks to all of them and stays out of my way, so I made **Layer Anarchy**.
