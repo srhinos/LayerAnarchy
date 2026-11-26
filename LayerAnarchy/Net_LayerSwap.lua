@@ -9,13 +9,6 @@ local WHO_WAIT, WHO_LATE_FOR, WHO_REUSE, WHO_MAX = 5, 30, 10, 50
 local LAYER_ID_MAX = 24
 local THROTTLED = Enum.SendAddonMessageResult.AddonMessageThrottle
 local WHO_ORIGIN = Enum.SocialWhoOrigin.Social
-local BLOCKED_PREFIXES = { "^%[nwb%]", "^%[autolayer%]" }
-local BLOCKED_PHRASES = { "what layer", "which layer", "how many layer", "auto inv", "pst for" }
-local BLOCKED_WORDS = {}
-for word in ("wts wtb wtt lfm lfg guild raid enchant enchanting recruiting selling buying worldbuffs autoinv"):gmatch("%a+") do
-  BLOCKED_WORDS[word] = true
-end
-local LAYER_WORDS = { layer = true, layers = true }
 local WHO_LISTS = { "LFGWhoListFrame", "FriendsFrame" }
 
 local who = { round = 0, muted = {} }
@@ -344,22 +337,6 @@ local function hostAsk(text, sender, key)
   end
   heard(sender, key, "h", true)
   if not LA.Host.Invite(sender, NET.id) then heard(sender, key, "-", true) end
-end
-
-function LA.LayerAsk(text)
-  local low = text:lower()
-  for _, pattern in ipairs(BLOCKED_PREFIXES) do
-    if low:find(pattern) then return false end
-  end
-  for _, phrase in ipairs(BLOCKED_PHRASES) do
-    if low:find(phrase, 1, true) then return false end
-  end
-  local hit = false
-  for word in low:gmatch("%a+") do
-    if BLOCKED_WORDS[word] then return false end
-    if LAYER_WORDS[word] then hit = true end
-  end
-  return hit
 end
 
 local function onWhisper(_, text, sender)

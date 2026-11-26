@@ -4,7 +4,7 @@ local Swap = {}
 LA.Swap = Swap
 
 local ASK_WINDOW, RETRY_WINDOW, MORE_WINDOW, FALLBACK_AFTER = 25, 10, 20, 8
-local JOIN_WAIT, VERDICT_AFTER, LEAVE_AFTER, MOVED_BACK_WATCH, TRANSFER_SETTLE = 10, 3, 3, 6, 2
+local JOIN_WAIT, VERDICT_AFTER, LEAVE_AFTER, MOVED_BACK_WATCH, SETTLE_MARGIN = 10, 3, 3, 6, 3
 local NOTE_FOR, LATE_FOR, SYSTEM_FRESH, BLOCKED_FLASH, STALE_SWAP = 6, 90, 3, 4, 120
 local HOUR = 3600
 local INVITE_SOUND_FILE = 567451
@@ -13,8 +13,7 @@ local SHARDING = Enum.PhaseReason.Sharding
 local cur
 local nextId = 0
 local lastAsk, lateUntil = nil, 0
-local abandonedAt
-local systemText, systemAt
+local abandonedAt, removedAt, leftToPlayer
 
 local function now() return GetTime() end
 
@@ -47,7 +46,6 @@ local function hidePopup(accepted)
 end
 
 local function decline(name, why)
-  LA.Quiet(name)
   pcall(DeclineGroup)
   hidePopup(false)
   LA.Log("decline", name, why)
@@ -106,6 +104,11 @@ armDeadline = function(s)
   s.deadlineTimer = LA.After(s.deadline - now(), checkDeadline, s)
 end
 
+local function extend(s, sec)
+  s.deadline = math.max(s.deadline, now() + sec)
+  armDeadline(s)
+end
+
 local function tryFallback(s, due)
   if cur ~= s or s.fallback or s.phase ~= "asking" or s.found > 0 then return end
   if (not due and now() - s.started < FALLBACK_AFTER) or not LA.Setting("askAutoLayer") then return end
@@ -118,8 +121,7 @@ end
 local function prefillEnded(s, sent)
   if cur ~= s or s.fallback ~= "prefilled" then return end
   s.fallback = sent and "sent" or "offered"
-  s.deadline = math.max(s.deadline, now() + RETRY_WINDOW)
-  armDeadline(s)
+  extend(s, RETRY_WINDOW)
   LA.Refresh()
 end
 
@@ -143,9 +145,8 @@ local function retry(why, note)
   end
   setPhase(s, "asking")
   s.host, s.hostKey, s.leaving = nil, nil, nil
-  s.deadline = math.max(s.deadline, now() + RETRY_WINDOW)
   s.note, s.noteUntil = note, now() + NOTE_FOR
-  armDeadline(s)
+  extend(s, RETRY_WINDOW)
   tryFallback(s)
   LA.Refresh()
 end
@@ -161,14 +162,12 @@ local function newAsk()
     local key = LA.NameKey(name)
     if not key then return end
     s.asked[key] = true
-    LA.Quiet(name)
   end
   function s.Offer(name, netId)
     local key = LA.NameKey(name)
     if not key or s.offers[key] or s.refused[key] then return end
     s.offers[key] = true
     s.found = s.found + 1
-    LA.Quiet(name)
     LA.Stats.Offered(netId, key)
     LA.Refresh()
   end
@@ -204,6 +203,7 @@ function Swap.Stop()
   local s = cur
   if not s then return end
   local phase = s.phase
+  finish(phase == "moved" and "moved" or "stopped")
   if phase == "invited" then
     hidePopup(false)
   elseif phase == "joining" and not IsInGroup() then
@@ -211,12 +211,11 @@ function Swap.Stop()
   elseif phase ~= "asking" and IsInGroup() then
     leave(s, "stopped")
   end
-  finish(phase == "moved" and "moved" or "stopped")
 end
 
 function Swap.More()
   local s = cur
-  s.deadline = math.max(s.deadline, now() + MORE_WINDOW)
+  extend(s, MORE_WINDOW)
   LA.Each("More", s)
   LA.Refresh()
 end
@@ -238,8 +237,15 @@ end
 
 function Swap.Busy() return cur ~= nil end
 
-function Swap.ClaimsTransfer()
-  return cur ~= nil and (cur.phase == "joined" or cur.phase == "moved" or cur.leftAt ~= nil)
+function Swap.ClaimsTransfer() return cur ~= nil and cur.phase == "joined" end
+
+local function involves(s, key) return s.asked[key] or s.offers[key] or s.refused[key] or s.hostKey == key end
+
+function Swap.Owns(key)
+  local late = now() < lateUntil and lastAsk or nil
+  if not key then return cur ~= nil or late ~= nil end
+  if key == leftToPlayer then return false end
+  return (cur and involves(cur, key)) or (late and involves(late, key)) or false
 end
 
 local function askingStatus(s, v)
@@ -252,13 +258,13 @@ local function askingStatus(s, v)
     v.status, v.tone, v.border = "Press " .. LA.UI.SendKey() .. " to send", "warn", "fail"
     return
   end
-  local sent, total, _, busy = tally(s)
+  local sent, total, more, busy = tally(s)
   if busy then
     v.status = "Asking " .. sent .. "/" .. total .. " – " .. s.found .. " found"
     return
   end
   v.status = "Searching (" .. s.found .. " found)"
-  if canAskMore(s) then v.swapText = "Ask more" end
+  if more then v.swapText = "Ask more" end
 end
 
 local function movedStatus(s)
@@ -288,12 +294,6 @@ function Swap.View(v)
   return true
 end
 
-local function hourlyRefusal()
-  if UnitOnTaxi("player") or InCombatLockdown() then return false end
-  local n, learned = LA.Limit.ThisHour()
-  return n >= (learned or 1)
-end
-
 local function verdict(s, join)
   if cur ~= s or s.phase ~= "joined" or s.joins ~= join then return end
   local unit = LA.LeaderUnit()
@@ -301,20 +301,16 @@ local function verdict(s, join)
   local hostZone = unit and LA.ZoneOf(LA.Safe(C_Map.GetBestMapForUnit(unit)))
   leave(s, "verdict")
   if hostZone and hostZone ~= LA.ZoneMapID() then return retry("zone", "Other zone – retrying") end
-  if apart and not hourlyRefusal() then return retry("ended", "Not moved – retrying") end
-  if apart or LA.Limit.Likely() then
+  if LA.Limit.Likely(apart) then
     local n = LA.Limit.Refused()
     return finish("refused", "Refused – " .. n .. " this hour", "Reset in " .. LA.Countdown(LA.Limit.Left() or HOUR))
   end
+  if apart then return retry("ended", "Not moved – retrying") end
   retry("same", "Same layer – retrying")
 end
 
 local function checkJoin(s, phaseAt)
-  if cur ~= s or s.phaseAt ~= phaseAt then return end
-  if s.phase == "invited" and StaticPopup_FindVisible("PARTY_INVITE") then
-    return LA.After(JOIN_WAIT, checkJoin, s, phaseAt)
-  end
-  if s.phase == "joining" or s.phase == "invited" then retry("ended") end
+  if cur == s and s.phaseAt == phaseAt then retry("ended") end
 end
 
 local function isLate(key)
@@ -327,43 +323,50 @@ local function wanted(s, key, friend)
 end
 
 local function take(s, name, key)
-  s.host, s.hostKey = name, key
-  LA.Quiet(name)
+  s.host, s.hostKey, leftToPlayer = name, key, nil
+  LA.ExpectGroupLines()
   LA.Stats.Note("invite")
-  if LA.Setting("auto") then
+  local auto = LA.Setting("auto")
+  if auto then
     pcall(AcceptGroup)
     hidePopup(true)
     setPhase(s, "joining")
+    LA.After(JOIN_WAIT, checkJoin, s, s.phaseAt)
   else
     setPhase(s, "invited")
-    ring()
   end
   LA.ClearPrefill()
-  LA.After(JOIN_WAIT, checkJoin, s, s.phaseAt)
   LA.Refresh()
+  return auto
+end
+
+local function handled(name, key, friend, sameShard)
+  local s = cur
+  if s and s.phase == "asking" and wanted(s, key, friend) then
+    if sameShard or s.refused[key] then
+      decline(name, "same shard")
+      s.refused[key] = true
+      LA.Each("OnHostFailed", s, "same", name)
+      return true
+    end
+    return take(s, name, key)
+  end
+  if friend then
+    leftToPlayer = key
+  elseif (s and (s.asked[key] or s.offers[key])) or isLate(key) then
+    decline(name, "late")
+    return true
+  end
+  return false
 end
 
 local function onInvite(_, name, _, _, _, _, isCrossShard, _, inviterGUID)
   name = LA.Safe(name)
   local key = LA.NameKey(name)
-  if not key then return end
-  local friend = social(inviterGUID)
-  local s = cur
-  if s and s.phase == "asking" and wanted(s, key, friend) then
-    if LA.Safe(isCrossShard) == false or s.refused[key] then
-      decline(name, "same shard")
-      s.refused[key] = true
-      return LA.Each("OnHostFailed", s, "same", name)
-    end
-    return take(s, name, key)
-  end
-  if friend then
-    LA.Quiet(name, false)
-    return ring()
-  end
-  if (s and (s.asked[key] or s.offers[key])) or isLate(key) then return decline(name, "late") end
-  ring()
+  if key and not handled(name, key, social(inviterGUID), LA.Safe(isCrossShard) == false) then ring() end
 end
+
+local function onInviteCancelled() if cur and cur.phase == "invited" then retry("ended") end end
 
 local function onJoined()
   local s = cur
@@ -383,16 +386,13 @@ end
 
 local function finishMoved(s)
   if cur ~= s then return end
-  if s.backAt and not LA.BorderAt(s.backAt) then
-    LA.Moved("moved back")
-    return finish("moved back", "Moved back – try again")
-  end
+  if LA.LayerEpoch() ~= s.movedEpoch then return finish("moved back", "Moved back – try again") end
   finish("moved")
 end
 
 local function watchMovedBack(s)
   s.leftAt = now()
-  LA.After(MOVED_BACK_WATCH + TRANSFER_SETTLE, finishMoved, s)
+  LA.After(MOVED_BACK_WATCH + SETTLE_MARGIN, finishMoved, s)
 end
 
 local function leaveAfterMove(s)
@@ -403,25 +403,20 @@ end
 
 local function onTransfer()
   local s = cur
-  if not s then return end
-  if s.phase == "joined" then
-    setPhase(s, "moved")
-    LA.Each("StopAsk", s)
-    LA.Limit.Moved()
-    LA.Moved("swap")
-    if LA.Setting("auto") then
-      s.leaveAt = now() + LEAVE_AFTER
-      LA.After(LEAVE_AFTER, leaveAfterMove, s)
-    end
-    LA.Refresh()
-  elseif s.leftAt and now() - s.leftAt <= MOVED_BACK_WATCH then
-    s.backAt = now()
+  if not (s and s.phase == "joined") then return end
+  setPhase(s, "moved")
+  LA.Each("StopAsk", s)
+  LA.Limit.Moved()
+  LA.Moved("swap")
+  s.movedEpoch = LA.LayerEpoch()
+  if LA.Setting("auto") then
+    s.leaveAt = now() + LEAVE_AFTER
+    LA.After(LEAVE_AFTER, leaveAfterMove, s)
   end
+  LA.Refresh()
 end
 
-local function removedByHost()
-  return systemAt ~= nil and now() - systemAt < SYSTEM_FRESH and systemText == ERR_UNINVITE_YOU
-end
+local function removedByHost() return removedAt ~= nil and now() - removedAt < SYSTEM_FRESH end
 
 local function onLeft()
   local s = cur
@@ -442,7 +437,9 @@ local function onRoster()
   if cur and (cur.phase == "joining" or cur.phase == "invited") and IsInGroup() then onJoined() end
 end
 
-local function onSystem(_, text) if cur then systemText, systemAt = LA.Safe(text), now() end end
+local function onSystem(_, text)
+  if cur and LA.GroupLine(LA.Safe(text)) == "ERR_UNINVITE_YOU" then removedAt = now() end
+end
 
 local function leaveStaleSwap()
   local r = LA.char.swapHost
@@ -453,6 +450,7 @@ end
 
 function Swap.Init()
   LA.On("PARTY_INVITE_REQUEST", onInvite)
+  LA.On("PARTY_INVITE_CANCEL", onInviteCancelled)
   LA.On("GROUP_JOINED", onJoined)
   LA.On("GROUP_ROSTER_UPDATE", onRoster)
   LA.On("SHARD_TRANSFER", onTransfer)

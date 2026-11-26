@@ -14,7 +14,7 @@ local CODE_LETTERS, CODE_BASE, CODE_MAX = 4, 26, 456975
 local ALLOW_ANY_FOR, DUPLICATE_FOR = 45, 3
 local DAY, HOUR, MINUTE, DAY_SLACK = 86400, 3600, 60, 60
 
-local names, lists, failed, zoneOfRaw = {}, {}, {}, {}
+local names, lists, failed, zoneOfRaw, listByBase = {}, {}, {}, {}, {}
 local ready, joined = false, false
 local askText, askAt, lastAskAt = {}, {}, -math.huge
 local asking
@@ -34,7 +34,7 @@ local function addList(name)
 end
 
 local function buildNames()
-  names, lists = {}, {}
+  names, lists, listByBase = {}, {}, {}
   local t, realm = C_DateAndTime.GetCurrentCalendarTime(), GetRealmName()
   if t and t.monthDay and realm then
     local d, m, y = t.monthDay, t.month, t.year
@@ -103,8 +103,6 @@ local function joinAll()
   end
 end
 
-local scheduleDay
-
 local function newDay()
   local before = names[1]
   buildNames()
@@ -113,10 +111,6 @@ local function newDay()
     joined = false
     joinAll()
   end
-  scheduleDay()
-end
-
-scheduleDay = function()
   local t = C_DateAndTime.GetCurrentCalendarTime()
   if t and t.hour and t.minute then LA.After(DAY - (t.hour * HOUR + t.minute * MINUTE) + DAY_SLACK, newDay) end
 end
@@ -128,10 +122,20 @@ local function postChannel()
   end
 end
 
+local function postTarget() return not LA.ChatLocked() and postChannel() end
+
+local function listFor(base)
+  local list = listByBase[base]
+  if list == nil then
+    list = lists[lower(base)] or false
+    listByBase[base] = list
+  end
+  return list
+end
+
 local function parse(text)
   local s = lower(gsub(gsub(text, "|c%x%x%x%x%x%x%x%x", ""), "|r", ""))
   s = gsub(s, "^%s+", "")
-  if find(s, "^%[nwb%]") or find(s, "^%[autolayer%]") then return nil end
   local zone
   for _ = 1, HEADERS do
     local token, rest = match(s, "^<(%w+)>%s*(.*)$")
@@ -148,7 +152,6 @@ end
 local function hostAsk(text, sender, needsZone)
   local zone, body = parse(text)
   if not body or (needsZone and not zone) then return end
-  if not zone and not LA.LayerAsk(body) then return end
   local here
   if zone then
     here = LA.ZoneMapID()
@@ -176,33 +179,23 @@ end
 
 local function onChannel(_, text, sender, _, _, _, _, _, _, base)
   base = LA.Safe(base)
-  local list = type(base) == "string" and lists[lower(base)]
-  sender = LA.Safe(sender)
-  if not list or type(sender) ~= "string" or sender == "" then return end
-  if LA.IsMe(sender) then return ourAskSent() end
+  local list = type(base) == "string" and listFor(base)
+  local key = list and LA.NameKey(sender)
+  if not key then return end
+  if key == LA.MyKey() then return ourAskSent() end
   text = LA.Safe(text)
   if type(text) ~= "string" or not find(text, "<[Aa][Ll][Zz]%a%a%a%a>") then return end
-  LA.Stats.Heard(NET.id, LA.NameKey(sender))
+  LA.Stats.Heard(NET.id, key)
   LA.Count(list.seen)
   if repeated(sender, text) then return end
   LA.Count(list.first)
   hostAsk(text, sender, true)
 end
 
-local GUILD_ASKS = { "^%A*layers?%f[%A]", "^%A*inv%s+layers?%f[%A]" }
-
-local function leadsWithLayer(text)
-  local low = lower(text)
-  for _, pattern in ipairs(GUILD_ASKS) do
-    if match(low, pattern) then return true end
-  end
-  return false
-end
-
 local function onGuild(_, text, sender)
   text, sender = LA.Safe(text), LA.Safe(sender)
   if type(text) ~= "string" or type(sender) ~= "string" or sender == "" then return end
-  if leadsWithLayer(text) then hostAsk(text, sender, false) end
+  if LA.LayerAsk(text, true) then hostAsk(text, sender, false) end
 end
 
 local function requestLine()
@@ -213,8 +206,7 @@ local function requestLine()
 end
 
 function NET.Init()
-  buildNames()
-  scheduleDay()
+  newDay()
   LA.On("CHAT_MSG_CHANNEL", onChannel)
   LA.On("CHAT_MSG_GUILD", onGuild)
 end
@@ -241,13 +233,12 @@ end
 function NET.Ask() joinAll() end
 
 function NET.Fallback()
-  if LA.ChatLocked() then return nil end
-  if postChannel() then return true end
-  joinAll()
+  if postTarget() then return true end
+  if not LA.ChatLocked() then joinAll() end
 end
 
 function NET.Prefill(_, ask, onEnd)
-  local id = not LA.ChatLocked() and postChannel()
+  local id = postTarget()
   if not id then return nil end
   local how = LA.PrefillChat(requestLine(), "CHANNEL", id, onEnd)
   if how then asking = ask end

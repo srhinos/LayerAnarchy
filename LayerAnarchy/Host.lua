@@ -3,15 +3,15 @@ local _, LA = ...
 local Host = { guests = {}, sent = {} }
 LA.Host = Host
 
-local RECENT, INVITE_WAIT, SAME_WAIT, MOVE_WAIT, RELEASE_AFTER, BACKOFF = 60, 60, 10, 60, 30, 300
+local RECENT, INVITE_WAIT, SAME_WAIT, MOVE_WAIT, RELEASE_AFTER, BACKOFF, LINES_FOR = 60, 60, 10, 60, 30, 300, 150
 local LIMIT_WINDOW, GROUP_MAX = 3600, 5
 local TAXI_RECHECKS = { 1, 3 }
 local SHARDING = Enum.PhaseReason.Sharding
 local NO_SHOW = { ERR_DECLINE_GROUP_S = true, ERR_ALREADY_IN_GROUP_S = true, ERR_BAD_PLAYER_NAME_S = true }
 
-local wakeTimer
-local tried = {}
-local inviting, ownInviteAt = false, -math.huge
+local wakeTimer, wakeDue, releaseRequestedAt
+local playerInvites = {}
+local dropped, droppedAt = {}, -math.huge
 
 function Host.Recent(sec)
   local sent, now, n = Host.sent, time(), 0
@@ -40,15 +40,22 @@ local function limitReached()
   return limit > 0 and Host.Recent(LIMIT_WINDOW) >= limit
 end
 
-local function limitLiftsIn()
+local function limitLiftsAt()
   local at = Host.sent[#Host.sent - inviteLimit() + 1]
-  return at and at + LIMIT_WINDOW - time()
+  return at and at + LIMIT_WINDOW
 end
 
-local function ownInviteOut() return time() - ownInviteAt < INVITE_WAIT end
+local function playerInvitesUntil()
+  local now, last = time(), nil
+  for key, at in pairs(playerInvites) do
+    if now - at < INVITE_WAIT then last = math.max(last or 0, at + INVITE_WAIT) else playerInvites[key] = nil end
+  end
+  return last
+end
 
 local function groupIsOurs()
-  if ownInviteOut() then return false end
+  local invitedUntil = playerInvitesUntil()
+  if invitedUntil then return false, invitedUntil end
   if not IsInGroup() then return true end
   if IsInRaid() or not UnitIsGroupLeader("player") then return false end
   for key in pairs(LA.Party()) do
@@ -75,21 +82,24 @@ local function invitesOut()
   return false
 end
 
+local function releasable()
+  if not groupIsOurs() or LA.InInstance() or invitesOut() then return nil end
+  return lastMove()
+end
+
 local function blocked()
   if LA.disabled or not LA.Setting("help") then return "off" end
   if LA.InInstance() then return "instance" end
   if UnitOnTaxi("player") and not LA.Setting("hostWhileFlying") then return "flying" end
   if LA.Swap.Busy() then return "swapping" end
-  if not groupIsOurs() then return "in group" end
-  if limitReached() then return "invite limit" end
+  local ours, liftsAt = groupIsOurs()
+  if not ours then return "in group", liftsAt end
+  if limitReached() then return "invite limit", limitLiftsAt() end
 end
 
 local function groupFull() return IsInGroup() and GetNumGroupMembers() >= GROUP_MAX end
 
-local function triedRecently(key)
-  local t = tried[key]
-  return t ~= nil and t.epoch == LA.LayerEpoch() and time() - t.at < BACKOFF
-end
+local function blindKind() return "blind " .. LA.LayerEpoch() end
 
 local function check(asker, askerZone, blind)
   local why = blocked()
@@ -99,7 +109,9 @@ local function check(asker, askerZone, blind)
   if not key or key == LA.MyKey() then return false, "self" end
   local zone = LA.ZoneMapID()
   if askerZone and zone and tonumber(askerZone) ~= zone then return false, "zone" end
-  if not LA.Gate("invite", key, RECENT, true) or (blind and triedRecently(key)) then return false, "recent" end
+  if not LA.Gate("invite", key, RECENT, true) or (blind and not LA.Gate(blindKind(), key, BACKOFF, true)) then
+    return false, "recent"
+  end
   if groupFull() and not lastMove() then return false, "full" end
   return true
 end
@@ -110,37 +122,53 @@ function Host.Can(asker, askerZone, blind)
   return ok, why
 end
 
+local function woke()
+  wakeTimer, wakeDue = nil, nil
+  Host.Check()
+end
+
 local function wakeAt(at)
+  if at == wakeDue then return end
   if wakeTimer then wakeTimer:Cancel() end
-  wakeTimer = at and LA.After(math.max(0, at - time()), Host.Check)
+  wakeDue = at
+  wakeTimer = at and LA.After(math.max(0, at - time()), woke)
 end
 
 local function notify(g, method) LA.Call(LA.Net(g.net), method, g.name) end
 
 local function tallyKey(g, event) return (g.flying and "fly." or "host.") .. event end
 
-local function settle(g, outcome)
-  local key = tallyKey(g, outcome)
-  LA.Tally(key)
-  LA.Stats.Note(key)
+local function settle(key, outcome)
+  local tally = tallyKey(Host.guests[key], outcome)
+  LA.Tally(tally)
+  LA.Stats.Note(tally)
+  LA.Gate(blindKind(), key, 0)
+end
+
+local function drop(key, outcome)
+  if outcome then settle(key, outcome) end
+  Host.guests[key] = nil
   local now = time()
-  for k, t in pairs(tried) do
-    if now - t.at >= BACKOFF then tried[k] = nil end
-  end
-  tried[g.key] = { at = now, epoch = LA.LayerEpoch() }
+  if now - droppedAt >= LINES_FOR then wipe(dropped) end
+  dropped[key], droppedAt = now, now
+end
+
+function Host.Owns(key)
+  local now = time()
+  if not key then return next(Host.guests) ~= nil or now - droppedAt < LINES_FOR end
+  local at = dropped[key]
+  return Host.guests[key] ~= nil or (at ~= nil and now - at < LINES_FOR)
 end
 
 local function track(key, g, now)
   local unit = LA.UnitFor(key)
   if not unit then
     if not g.joinedAt and now - g.invitedAt < INVITE_WAIT then return g.invitedAt + INVITE_WAIT end
-    if not g.joinedAt then settle(g, "noshow") end
-    Host.guests[key] = nil
+    drop(key, not g.joinedAt and "noshow" or nil)
     return nil
   end
   if not g.joinedAt then
     g.joinedAt = now
-    LA.Quiet(g.name)
     notify(g, "OnGuestJoined")
   end
   if g.movedAt then return nil end
@@ -148,15 +176,14 @@ local function track(key, g, now)
   g.apart = g.apart or phase == SHARDING
   if not g.apart then
     if now - g.joinedAt < SAME_WAIT then return g.joinedAt + SAME_WAIT end
-    settle(g, "same")
-    Host.guests[key] = nil
+    drop(key, "same")
   elseif phase == nil then
     g.movedAt = now
-    settle(g, "moved")
+    settle(key, "moved")
     notify(g, "OnGuestMoved")
   elseif now - g.joinedAt >= MOVE_WAIT then
     g.movedAt = now
-    settle(g, "stuck")
+    settle(key, "stuck")
   else
     return g.joinedAt + MOVE_WAIT
   end
@@ -167,23 +194,21 @@ local function earliest(a, b) return (a and b) and math.min(a, b) or a or b end
 function Host.Check()
   local now, due = time(), nil
   for key, g in pairs(Host.guests) do due = earliest(due, track(key, g, now)) end
-  if ownInviteOut() then due = earliest(due, ownInviteAt + INVITE_WAIT) end
-  local last = lastMove()
-  if last and groupIsOurs() and not invitesOut() and not LA.InInstance() then
-    local releaseAt = last + (LA.Swap.Busy() and 0 or RELEASE_AFTER)
-    if now >= releaseAt then LA.LeaveGroup("released") else due = earliest(due, releaseAt) end
+  local last, released = releasable(), false
+  if last then
+    local releaseAt = releaseRequestedAt or last + RELEASE_AFTER
+    released = now >= releaseAt
+    if released then LA.LeaveGroup("released") else due = earliest(due, releaseAt) end
   end
+  releaseRequestedAt = nil
   wakeAt(due)
   LA.Refresh()
+  return released
 end
 
 function Host.Release()
-  if not groupIsOurs() or LA.InInstance() then return false end
-  for key, g in pairs(Host.guests) do
-    if LA.UnitFor(key) and not g.movedAt then return false end
-  end
-  LA.LeaveGroup("released")
-  return true
+  releaseRequestedAt = time()
+  return Host.Check()
 end
 
 function Host.Invite(name, netId)
@@ -196,20 +221,19 @@ function Host.Invite(name, netId)
     LA.LeaveGroup("full")
     wipe(Host.guests)
   end
-  LA.Quiet(name)
-  inviting = true
+  local now, key = time(), LA.NameKey(name)
+  local g = { name = name, net = netId, invitedAt = now, flying = UnitOnTaxi("player") }
+  Host.guests[key] = g
+  LA.ExpectGroupLines()
   local sent, err = pcall(C_PartyInfo.InviteUnit, name)
-  inviting = false
   if not sent then
+    Host.guests[key] = nil
     LA.Log("error", "invite", name, err)
     return false
   end
-  local now, key = time(), LA.NameKey(name)
   LA.Gate("invite", key, 0)
   pruneSent(now)
   Host.sent[#Host.sent + 1] = now
-  local g = { key = key, name = name, net = netId, invitedAt = now, flying = UnitOnTaxi("player") }
-  Host.guests[key] = g
   LA.Stats.Note(tallyKey(g, "invited"))
   LA.Log("invite", netId, name)
   Host.Check()
@@ -217,7 +241,7 @@ function Host.Invite(name, netId)
 end
 
 function Host.View(v)
-  local why = blocked()
+  local why, liftsAt = blocked()
   if why == "off" then
     v.status, v.tone = "Host off", "off"
     return
@@ -228,10 +252,7 @@ function Host.View(v)
       return
     end
   end
-  if why == "invite limit" then
-    local lifts = limitLiftsIn()
-    if lifts then LA.WakeIn(math.max(1, lifts)) end
-  end
+  if liftsAt then LA.WakeIn(liftsAt - time()) end
   if why then
     v.status, v.tone = "Paused (" .. why .. ")", "warn"
   else
@@ -245,27 +266,31 @@ local function onUnitPhase() if next(Host.guests) then Host.Check() end end
 
 local function onGroupLeft()
   for key, g in pairs(Host.guests) do
-    if g.joinedAt then
-      LA.Quiet(g.name)
-      Host.guests[key] = nil
-    end
+    if g.joinedAt then drop(key) end
   end
   Host.Check()
 end
 
 local function onSystem(_, text)
+  if not (next(playerInvites) or invitesOut()) then return end
   local kind, key = LA.GroupLine(LA.Safe(text))
-  local g = NO_SHOW[kind] and Host.guests[key]
-  if not g or g.joinedAt then return end
-  settle(g, "noshow")
-  Host.guests[key] = nil
+  if not NO_SHOW[kind] then return end
+  local g = Host.guests[key]
+  if g and not g.joinedAt then
+    drop(key, "noshow")
+  elseif not playerInvites[key] then
+    return
+  end
+  playerInvites[key] = nil
   Host.Check()
 end
 
-local function onOwnInvite()
-  if inviting then return end
-  ownInviteAt = time()
-  Host.Check()
+local function onInviteUnit(name)
+  local key = LA.NameKey(name)
+  if not key or Host.guests[key] then return end
+  local opens = playerInvitesUntil() == nil
+  playerInvites[key] = time()
+  if opens then Host.Check() end
 end
 
 local function onControlGained()
@@ -283,8 +308,6 @@ local function restore()
   for key, g in pairs(Host.guests) do
     if type(g) ~= "table" or not g.invitedAt or (not g.joinedAt and now - g.invitedAt >= INVITE_WAIT) then
       Host.guests[key] = nil
-    else
-      g.key = key
     end
   end
   pruneSent(now)
@@ -292,7 +315,7 @@ end
 
 function Host.Init()
   restore()
-  hooksecurefunc(C_PartyInfo, "InviteUnit", onOwnInvite)
+  hooksecurefunc(C_PartyInfo, "InviteUnit", onInviteUnit)
   LA.On("PLAYER_ENTERING_WORLD", onRoster)
   LA.On("GROUP_ROSTER_UPDATE", onRoster)
   LA.On("UNIT_PHASE", onUnitPhase)

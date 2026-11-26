@@ -26,10 +26,10 @@ local LOG_MAX, LOG_SHOWN, FLASH_FOR, WAKE_SLACK = 400, 30, 10, 0.02
 local MIN_WINDOW, MOVES_MAX, LOCKOUTS_MAX, SECONDS_SHOWN = 300, 200, 50, 60
 local COUNTDOWN_MINUTES = { 5, 10, 15, 30, 45 }
 local BORDER_BEFORE, BORDER_AFTER, TRANSFER_SETTLE = 10, 2, 2
-local NOT_FOUND_FOR, OFFLINE_FOR, GATE_MAX, GATE_AGE = 30, 1800, 256, 120
+local NOT_FOUND_FOR, OFFLINE_FOR, GATE_MAX, GATE_AGE = 30, 1800, 256, 300
 local BOOK_DAYS, BOOK_MAX, PARTY_SIZE, RAID_SIZE, MAP_CLIMB = 7, 300, 4, 40, 10
 local CHANNEL_DELAY, JOIN_TIMEOUT, LOW_SLOTS, RELOCATE_AFTER = 10, 10, 5, 30
-local QUIET_FOR, GROUP_QUIET_FOR = 150, 60
+local GROUP_QUIET_FOR = 60
 local MAX_WINDOWS = Constants.ChatFrameConstants.MaxChatWindows
 local ZONE = Enum.UIMapType.Zone
 local RESULT = Enum.SendAddonMessageResult
@@ -43,8 +43,19 @@ local NAMED_LINES = {
   "ERR_INVITE_PLAYER_S", "ERR_JOINED_GROUP_S", "ERR_LEFT_GROUP_S", "ERR_DECLINE_GROUP_S", "ERR_ALREADY_IN_GROUP_S",
   "ERR_BAD_PLAYER_NAME_S", "ERR_INVITED_TO_GROUP_SS", "ERR_INVITED_ALREADY_IN_GROUP_SS",
 }
-local GROUP_LINES = { "ERR_GROUP_DISBANDED", "ERR_LEFT_GROUP_YOU", "ERR_NOT_IN_GROUP" }
-local LOOT_LINES = "^ERR_SET_LOOT_"
+local GROUP_LINES = {
+  "ERR_GROUP_DISBANDED", "ERR_LEFT_GROUP_YOU", "ERR_NOT_IN_GROUP", "ERR_UNINVITE_YOU",
+  "ERR_SET_LOOT_FREEFORALL", "ERR_SET_LOOT_GROUP", "ERR_SET_LOOT_MASTER", "ERR_SET_LOOT_NBG",
+  "ERR_SET_LOOT_ROUNDROBIN", "ERR_SET_LOOT_THRESHOLD_S", "ERR_SET_LOOT_PERSONAL",
+}
+local LEADING_ASKS = { "^%A*[Ll][Aa][Yy][Ee][Rr][Ss]?%f[%A]", "^%A*[Ii][Nn][Vv]%s+[Ll][Aa][Yy][Ee][Rr][Ss]?%f[%A]" }
+local ASK_BLOCKED_PREFIXES = { "^%[nwb%]", "^%[autolayer%]" }
+local ASK_BLOCKED_PHRASES = { "what layer", "which layer", "how many layer", "auto inv", "pst for" }
+local ASK_BLOCKED_WORDS = {}
+for word in ("wts wtb wtt lfm lfg guild raid enchant enchanting recruiting selling buying worldbuffs autoinv"):gmatch("%a+") do
+  ASK_BLOCKED_WORDS[word] = true
+end
+local LAYER_WORDS = { layer = true, layers = true }
 local JOINED = { YOU_CHANGED = true, YOU_JOINED = true }
 local REFUSED = { WRONG_PASSWORD = true, BANNED = true }
 local MAP_EVENTS = { "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "PLAYER_ENTERING_WORLD" }
@@ -99,6 +110,8 @@ function LA.Try(where, fn, ...)
   if ok then return result end
   LA.Log("error", where, result)
 end
+
+function LA.Guard(where, fn) return function(...) return LA.Try(where, fn, ...) end end
 
 local bus, handlers = CreateFrame("Frame"), {}
 
@@ -261,7 +274,8 @@ local function linePattern(s)
   return "^" .. named:gsub("%%%%s", ".-") .. "$"
 end
 
-local groupLines = {}
+local groupLines, classified = {}, {}
+local groupActAt = -math.huge
 
 local function addGroupLine(kind, named)
   local pattern = linePattern(_G[kind])
@@ -271,54 +285,73 @@ end
 local function buildGroupLines()
   for _, kind in ipairs(NAMED_LINES) do addGroupLine(kind, true) end
   for _, kind in ipairs(GROUP_LINES) do addGroupLine(kind, false) end
-  for kind in pairs(_G) do
-    if type(kind) == "string" and kind:find(LOOT_LINES) then addGroupLine(kind, false) end
-  end
 end
 
 function LA.GroupLine(text)
   if type(text) ~= "string" then return nil end
-  for _, line in ipairs(groupLines) do
-    local name = text:match(line.pattern)
-    if name then return line.kind, line.named and LA.NameKey(name) or nil end
-  end
-end
-
-local quietAt, quietSweptAt, groupQuietAt = {}, 0, -math.huge
-
-function LA.Quiet(name, on)
-  local now, key = GetTime(), LA.NameKey(name)
-  if now - quietSweptAt > QUIET_FOR then
-    quietSweptAt = now
-    for k, at in pairs(quietAt) do
-      if now - at > QUIET_FOR then quietAt[k] = nil end
+  if text ~= classified.text then
+    classified.text, classified.kind, classified.key = text, nil, nil
+    for _, line in ipairs(groupLines) do
+      local name = text:match(line.pattern)
+      if name then
+        classified.kind, classified.key = line.kind, line.named and LA.NameKey(name) or nil
+        break
+      end
     end
   end
-  if on == false then
-    if key then quietAt[key] = nil end
-    return
+  return classified.kind, classified.key
+end
+
+function LA.ExpectGroupLines() groupActAt = GetTime() end
+
+local function leadsWithLayer(text)
+  for _, pattern in ipairs(LEADING_ASKS) do
+    if text:find(pattern) then return true end
   end
-  if key then quietAt[key] = now end
-  groupQuietAt = now
+  return false
 end
 
-local function hideGroupLine(_, _, msg)
-  local kind, key = LA.GroupLine(LA.Safe(msg))
+function LA.LayerAsk(text, strict)
+  if not text:find("[Ll][Aa][Yy][Ee][Rr]") then return false end
+  if strict and not leadsWithLayer(text) then return false end
+  local low = text:lower()
+  for _, pattern in ipairs(ASK_BLOCKED_PREFIXES) do
+    if low:find(pattern) then return false end
+  end
+  for _, phrase in ipairs(ASK_BLOCKED_PHRASES) do
+    if low:find(phrase, 1, true) then return false end
+  end
+  local hit = false
+  for word in low:gmatch("%a+") do
+    if ASK_BLOCKED_WORDS[word] then return false end
+    if LAYER_WORDS[word] then hit = true end
+  end
+  return hit
+end
+
+local function hideGroupLine(msg, now)
+  local acting = now - groupActAt < GROUP_QUIET_FOR
+  if not (acting or LA.Swap.Owns() or LA.Host.Owns()) then return false end
+  local kind, key = LA.GroupLine(msg)
   if not kind then return false end
-  local now = GetTime()
-  if key then return quietAt[key] ~= nil and now - quietAt[key] < QUIET_FOR end
-  return now - groupQuietAt < GROUP_QUIET_FOR
+  if key then return LA.Swap.Owns(key) or LA.Host.Owns(key) end
+  return acting
 end
 
-local function hideNotFound(_, _, msg)
-  local now = GetTime()
-  if now - lastWhisperAt > NOT_FOUND_FOR then return false end
-  msg = LA.Safe(msg)
-  local key = type(msg) == "string" and LA.NameKey(msg:match(notFoundPattern))
+local function hideNotFound(msg, now)
+  if now - lastWhisperAt > NOT_FOUND_FOR or not notFoundPattern then return false end
+  local key = LA.NameKey(msg:match(notFoundPattern))
   local at = key and whisperedAt[key]
   if not at or now - at > NOT_FOUND_FOR then return false end
   offlineAt[key] = now
   return true
+end
+
+local function hideSystemLine(_, _, msg)
+  msg = LA.Safe(msg)
+  if type(msg) ~= "string" then return false end
+  local now = GetTime()
+  return hideNotFound(msg, now) or hideGroupLine(msg, now)
 end
 
 function LA.ChatRestricted()
@@ -360,16 +393,11 @@ local PREFILL_EVENTS = {
   ["ChatFrame.OnEditBoxFocusLost"] = onBoxClosed,
 }
 
-local function watchPrefill()
-  if prefill.watching then return end
-  prefill.watching = true
-  for event, fn in pairs(PREFILL_EVENTS) do EventRegistry:RegisterCallback(event, fn, prefill) end
-end
+for event, fn in pairs(PREFILL_EVENTS) do EventRegistry:RegisterCallback(event, fn, prefill) end
 
 function LA.PrefillChat(text, chatType, target, onEnd)
   local typing = ChatFrameUtil.GetActiveWindow()
   if typing and (typing:GetText() or "") ~= "" then return nil end
-  watchPrefill()
   endPrefill()
   local box = ChatFrameUtil.ChooseBoxForSend(DEFAULT_CHAT_FRAME)
   local saved = {}
@@ -594,7 +622,7 @@ end
 
 function LA.LeaveGroup(why)
   LA.Log("leave", why)
-  LA.Quiet()
+  LA.ExpectGroupLines()
   pcall(C_PartyInfo.LeaveParty)
 end
 
@@ -703,9 +731,11 @@ function Limit.Refused()
   return n
 end
 
-function Limit.Likely()
-  local count = LA.char.learned.count
-  return count ~= nil and movesWithin(LA.char, time(), HOUR) >= count
+function Limit.Likely(apart)
+  if apart and (UnitOnTaxi("player") or InCombatLockdown()) then return false end
+  local count = LA.char.learned.count or (apart and 1)
+  if not count then return false end
+  return movesWithin(LA.char, time(), HOUR) >= count
 end
 
 function Limit.ThisHour()
@@ -837,25 +867,20 @@ local function onTransferImminent()
   LA.Refresh()
 end
 
-local function readEviction()
-  local left = evictionLeft()
-  if left <= 0 then return end
-  refreshAt = GetTime() + left
-  LA.Refresh()
-end
+local function readEviction() if evictionLeft() > 0 then onTransferImminent() end end
 
 local function onTransferCancelled()
   refreshAt = nil
   LA.Refresh()
 end
 
-function LA.BorderAt(at)
+local function crossedBorder(at)
   local sinceZone = at - lastZoneAt
   return (sinceZone >= 0 and sinceZone <= BORDER_BEFORE) or (sinceZone < 0 and -sinceZone <= BORDER_AFTER)
 end
 
 local function judgeTransfer(at, wasRefresh)
-  if LA.BorderAt(at) and not wasRefresh then return end
+  if crossedBorder(at) and not wasRefresh then return end
   LA.Moved(wasRefresh and "world refresh" or "transfer")
 end
 
@@ -890,9 +915,8 @@ local function openChannels() LA.Each("OnChannels") end
 
 local function watchChat()
   notFoundPattern = linePattern(ERR_CHAT_PLAYER_NOT_FOUND_S)
-  if notFoundPattern then ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", hideNotFound) end
   buildGroupLines()
-  ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", hideGroupLine)
+  ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", hideSystemLine)
   for _, event in ipairs({ "CHAT_MSG_CHANNEL_NOTICE", "CHAT_MSG_CHANNEL_NOTICE_USER" }) do
     ChatFrameUtil.AddMessageEventFilter(event, isOurNotice)
     LA.On(event, onChannelNotice)
@@ -1017,6 +1041,12 @@ local function printLog(n)
   end
 end
 
+local function tallies(prefix)
+  local t = LA.db.tallies
+  return string.format("moved %d, stuck %d, same %d, no-show %d", t[prefix .. "moved"] or 0, t[prefix .. "stuck"] or 0,
+    t[prefix .. "same"] or 0, t[prefix .. "noshow"] or 0)
+end
+
 local function printDiag()
   local v, c = LA.View(), LA.char
   print(string.format("|cffe8cc6aLayer Anarchy %s|r %s · %s · restricted=%s", LA.VERSION, v.label, tostring(v.status),
@@ -1026,10 +1056,7 @@ local function printDiag()
   print("missing APIs: " .. missingApis())
   local counted = countsText()
   if counted ~= "" then print("counts: " .. counted) end
-  local t = LA.db.tallies
-  print(string.format("hosted: moved %d, stuck %d, same %d, no-show %d · flying: moved %d, stuck %d, same %d, no-show %d",
-    t["host.moved"] or 0, t["host.stuck"] or 0, t["host.same"] or 0, t["host.noshow"] or 0,
-    t["fly.moved"] or 0, t["fly.stuck"] or 0, t["fly.same"] or 0, t["fly.noshow"] or 0))
+  print("hosted: " .. tallies("host.") .. " · flying: " .. tallies("fly."))
   printLog(LOG_SHOWN)
 end
 

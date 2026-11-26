@@ -81,7 +81,6 @@ local function Text(parent, font, size, c)
 end
 
 local function Set(fs, s)
-  fs.text = s
   if fs.cur == s then return false end
   fs.cur = s
   fs:SetText(s)
@@ -173,8 +172,8 @@ local function Bars(parent)
   return g
 end
 
-local function Selectable(b, mark)
-  b.mark, b.OnSmartNavSelect, b.OnSmartNavDeselect = mark, pad.Pick, pad.Unpick
+local function Selectable(b)
+  b.OnSmartNavSelect, b.OnSmartNavDeselect = pad.Pick, pad.Unpick
   return b
 end
 
@@ -272,7 +271,7 @@ local function Draggable(f)
 end
 
 local function PaintToggles()
-  for _, b in pairs(toggles) do Paint(b.glyph, (b.held() or b:IsMouseOver() or pad.picked == b) and C.gold or C.grey) end
+  for _, b in pairs(toggles) do Paint(b.glyph, (b.held() or b:IsMouseOver()) and C.gold or C.grey) end
 end
 
 local function ApplyHover()
@@ -366,13 +365,12 @@ local function Label(r, text)
   local fs = Text(r, FONT, SIZE.option, C.text)
   fs:SetPoint("LEFT", ROW_INSET, 0)
   Set(fs, text)
-  return fs
 end
 
 local function OptionRow(list, i, text, key)
   local r = Selectable(Row(list, (i - 1) * OPT_H, OPT_H, "Button"))
   Solid(r, "HIGHLIGHT", C.hover):SetAllPoints()
-  r.label = Label(r, text)
+  Label(r, text)
   local pill = CreateFrame("Frame", nil, r)
   pill:SetSize(PILL_W, PILL_H)
   pill:SetPoint("RIGHT", -ROW_INSET, 0)
@@ -393,20 +391,15 @@ end
 local function Step(sl, dir) Commit(sl, sl:GetValue() + dir * sl.step) end
 
 local function Stepper(sl, dir, angles)
-  local b = CreateFrame("Button", nil, sl)
-  b:SetSize(STEP_W, STEP_W)
-  Skin(b, C.btn, C.btnEdge)
-  Solid(b, "HIGHLIGHT", C.hover):SetAllPoints()
+  local b = Button(sl, STEP_W, STEP_W)
   Glyph(b, STEP_GLYPH, ICON.minus, C.text, angles):SetPoint("CENTER")
   b:SetScript("OnClick", function() Step(sl, dir) end)
   return b
 end
 
 local function SliderRow(list, i, label, key, lo, hi, step, fmt, tip)
-  local r = Selectable(Row(list, (i - 1) * OPT_H, OPT_H), pad.Tint)
-  r.tint = Solid(r, "BACKGROUND", C.hover)
-  r.tint:SetAllPoints()
-  r.tint:Hide()
+  local r = Selectable(Row(list, (i - 1) * OPT_H, OPT_H, "Button"))
+  Solid(r, "HIGHLIGHT", C.hover):SetAllPoints()
   Label(r, label)
   local readout = Text(r, FONT, SIZE.option, C.value)
   readout:SetJustifyH("RIGHT")
@@ -442,7 +435,6 @@ local function SliderRow(list, i, label, key, lo, hi, step, fmt, tip)
     Commit(self, self:GetValue())
   end)
   if tip then
-    r:EnableMouse(true)
     r.tip = tip
     r:SetScript("OnEnter", TipShow)
     r:SetScript("OnLeave", TipHide)
@@ -452,7 +444,7 @@ end
 
 local function invitesText(v)
   v = math.floor(v + 0.5)
-  return v == 0 and "No limit" or tostring(v)
+  return v == 0 and "∞" or tostring(v)
 end
 
 local function scaleText(v) return math.floor(v * 100 + 0.5) .. "%" end
@@ -822,22 +814,9 @@ local function DrawHud(v)
   Paint(hud.glyph, GLYPH[key])
 end
 
-function pad.Atlas() return InputIconTextureSetUtility.GetNormalActiveInputIconButtonTexture(GAMEPAD_FACE_BOTTOM) end
+function pad.Pick(b) pad.picked = b end
 
-function pad.Icon() return CreateAtlasMarkup(pad.Atlas(), PAD_ICON, PAD_ICON) end
-
-
-
-function pad.Tint(b, on) b.tint:SetShown(on) end
-
-function pad.Mark(b, on)
-  if on then pad.picked = b elseif pad.picked == b then pad.picked = nil end
-  if b.mark then b.mark(b, on) end
-end
-
-function pad.Pick(b) LA.Try("pad", pad.Mark, b, true) end
-
-function pad.Unpick(b) LA.Try("pad", pad.Mark, b, false) end
+function pad.Unpick(b) if pad.picked == b then pad.picked = nil end end
 
 function pad.Restricted()
   return InCombatLockdown() or C_RestrictedActions.IsAddOnRestrictionActive(Enum.AddOnRestrictionType.Combat)
@@ -856,8 +835,7 @@ function pad.Leave()
     GamepadMode.FrameControlsManager:FrameHidden(root)
     SmartNavigation:RemovePanelInfo(root)
   end
-  pad.focused = false
-  if pad.picked then pad.Unpick(pad.picked) end
+  pad.focused, pad.picked = false, nil
   ApplyHover()
 end
 
@@ -865,13 +843,12 @@ function pad.Prepare()
   if pad.prepared then return end
   pad.prepared = true
   local function Stay(sl, dir)
-    return function()
-      LA.Try("pad", Step, sl, dir)
+    return LA.Guard("pad", function()
+      Step(sl, dir)
       return true
-    end
+    end)
   end
   for _, sl in ipairs(sliders) do
-    SmartNavigation_MarkFrameFocusable(sl.row)
     SmartNavigation_MarkFrameIgnored(sl)
     SmartNavigation_AddJumpNavigationOverride(sl.row, SMART_NAV_INPUT_DIRECTION.LEFT, Stay(sl, -1))
     SmartNavigation_AddJumpNavigationOverride(sl.row, SMART_NAV_INPUT_DIRECTION.RIGHT, Stay(sl, 1))
@@ -904,16 +881,24 @@ function pad.Cursor()
   if want then ConsolePort:AddInterfaceCursorFrame(box) else ConsolePort:RemoveInterfaceCursorFrame(box) end
 end
 
-function pad.Focused(on)
-  pad.focused = on
-  ApplyHover()
+function pad.Focus()
+  pad.focused = true
+  Later()
+end
+
+function pad.Unfocus()
+  pad.focused = false
   Later()
 end
 
 function pad.Close()
-  if open then return CloseDrawer() end
-  pad.release = true
-  Later()
+  if open then
+    CloseDrawer()
+  else
+    pad.release = true
+    Later()
+  end
+  return true
 end
 
 function pad.OnRestriction(_, kind, state)
@@ -930,12 +915,9 @@ end
 local function BuildRoot()
   root = CreateFrame("Frame", nil, UIParent)
   root:SetAllPoints()
-  root.FocusGamepad = function() LA.Try("pad", pad.Focused, true) end
-  root.UnfocusGamepad = function() LA.Try("pad", pad.Focused, false) end
-  root.SmartNavigationCloseHandler = function()
-    LA.Try("pad", pad.Close)
-    return true
-  end
+  root.FocusGamepad = LA.Guard("pad", pad.Focus)
+  root.UnfocusGamepad = LA.Guard("pad", pad.Unfocus)
+  root.SmartNavigationCloseHandler = LA.Guard("pad", pad.Close)
   driver = CreateFrame("Frame")
   driver:Hide()
   driver:SetScript("OnUpdate", function(self)
@@ -949,6 +931,7 @@ end
 function UI.Refresh()
   if not box then return end
   if LA.Setting("scale") ~= placed.s or LA.Setting("point") ~= placed.pt then Place() end
+  local was = current
   current = not LA.Setting("hidden") and (LA.Setting("minimized") and hud or box) or nil
   if current then
     local v = LA.View()
@@ -957,7 +940,7 @@ function UI.Refresh()
   box:SetShown(current == box)
   hud:SetShown(current == hud)
   if open then open.sync() end
-  Later()
+  if pad.listed or ConsolePort or current ~= was then Later() end
 end
 
 -- listed only on request: a listed window takes the controller whenever another window closes
@@ -966,10 +949,11 @@ function UI.Focus()
   if not current or pad.Restricted() or not InputUtil.IsGamepadUIEnabled() then return end
   pad.Prepare()
   pad.listed = true
-  SmartNavigation:SetTargetButtonForFrame(root, current == hud and hud or box.swap)
+  local start = current == hud and hud or box.swap
+  SmartNavigation:SetTargetButtonForFrame(root, start)
   -- as a popup it survives the game's HUD edit mode, which hides the other listed windows
   GamepadMode.FrameControlsManager:FrameShown(root, true)
-  pad.Select(current == hud and hud or box.swap)
+  pad.Select(start)
 end
 
 function pad.OnFocusRequest(manager, wanted)
@@ -978,7 +962,11 @@ function pad.OnFocusRequest(manager, wanted)
   UI.Focus()
 end
 
-function UI.SendKey() return InputUtil.IsGamepadUIEnabled() and pad.Icon() or "Enter" end
+function UI.SendKey()
+  if not InputUtil.IsGamepadUIEnabled() then return "Enter" end
+  local atlas = InputIconTextureSetUtility.GetNormalActiveInputIconButtonTexture(GAMEPAD_FACE_BOTTOM)
+  return CreateAtlasMarkup(atlas, PAD_ICON, PAD_ICON)
+end
 
 function UI.Init()
   if box then return end
@@ -994,7 +982,7 @@ function UI.Init()
   LA.On("INPUT_DEVICE_INTERFACE_TRANSITION", LA.Refresh)
   EventRegistry:RegisterCallback("Gamepad.RefreshFrameFocus", Later, pad)
   if GamepadMode and GamepadMode.FrameControlsManager then
-    hooksecurefunc(GamepadMode.FrameControlsManager, "SetUIFocusState", function(...) LA.Try("pad", pad.OnFocusRequest, ...) end)
+    hooksecurefunc(GamepadMode.FrameControlsManager, "SetUIFocusState", LA.Guard("pad", pad.OnFocusRequest))
   end
   LA.Command("diag pad", pad.Print)
   Place()
