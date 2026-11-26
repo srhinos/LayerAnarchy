@@ -21,7 +21,7 @@ local API_CHECKS = {
 
 local LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 local TOKEN_MIN, TOKEN_MAX = 100000, 999999
-local HOUR, DAY = 3600, 86400
+local MINUTE, HOUR, DAY = 60, 3600, 86400
 local LOG_MAX, LOG_SHOWN, FLASH_FOR, WAKE_SLACK = 400, 30, 10, 0.02
 local MIN_WINDOW, MOVES_MAX, LOCKOUTS_MAX, SECONDS_SHOWN = 300, 200, 50, 60
 local COUNTDOWN_MINUTES = { 5, 10, 15, 30, 45 }
@@ -48,20 +48,21 @@ local GROUP_LINES = {
   "ERR_SET_LOOT_FREEFORALL", "ERR_SET_LOOT_GROUP", "ERR_SET_LOOT_MASTER", "ERR_SET_LOOT_NBG",
   "ERR_SET_LOOT_ROUNDROBIN", "ERR_SET_LOOT_THRESHOLD_S", "ERR_SET_LOOT_PERSONAL",
 }
-local LEADING_ASKS = { "^%A*[Ll][Aa][Yy][Ee][Rr][Ss]?%f[%A]", "^%A*[Ii][Nn][Vv]%s+[Ll][Aa][Yy][Ee][Rr][Ss]?%f[%A]" }
+local LAYER_WORD = "%f[%a][Ll][Aa][Yy][Ee][Rr][Ss]?%f[%A]"
+local LEADING_ASKS = { "^%A*" .. LAYER_WORD, "^%A*[Ii][Nn][Vv]%s+" .. LAYER_WORD }
 local ASK_BLOCKED_PREFIXES = { "^%[nwb%]", "^%[autolayer%]" }
 local ASK_BLOCKED_PHRASES = { "what layer", "which layer", "how many layer", "auto inv", "pst for" }
 local ASK_BLOCKED_WORDS = {}
 for word in ("wts wtb wtt lfm lfg guild raid enchant enchanting recruiting selling buying worldbuffs autoinv"):gmatch("%a+") do
   ASK_BLOCKED_WORDS[word] = true
 end
-local LAYER_WORDS = { layer = true, layers = true }
 local JOINED = { YOU_CHANGED = true, YOU_JOINED = true }
 local REFUSED = { WRONG_PASSWORD = true, BANNED = true }
 local MAP_EVENTS = { "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "PLAYER_ENTERING_WORLD" }
+local NOTICE_EVENTS = { "CHAT_MSG_CHANNEL_NOTICE", "CHAT_MSG_CHANNEL_NOTICE_USER" }
 local EMPTY = {}
 
-local secret = issecretvalue or function() return false end
+local secret = issecretvalue
 
 function LA.Safe(v)
   if secret(v) then return nil end
@@ -145,7 +146,7 @@ function LA.After(sec, fn, a, b)
 end
 
 function LA.Setting(key)
-  local v = LA.db and LA.db.settings[key]
+  local v = LA.db.settings[key]
   if v == nil then return DEFAULTS[key] end
   return v
 end
@@ -156,16 +157,18 @@ function LA.SetSetting(key, value)
   LA.Refresh()
 end
 
+function LA.ToggleSetting(key) LA.SetSetting(key, not LA.Setting(key)) end
+
 function LA.ToggleHelp()
   if LA.disabled or LA.Debug.Previewing() then return end
-  LA.SetSetting("help", not LA.Setting("help"))
+  LA.ToggleSetting("help")
 end
 
 function LA.Bare(name) return name:match("^(.-)%-[^%-%s]+$") or name end
 
 function LA.NameKey(name)
   name = LA.Safe(name)
-  if type(name) ~= "string" or name == "" then return nil end
+  if not name or name == "" then return nil end
   return LA.Bare(name):lower()
 end
 
@@ -192,13 +195,21 @@ end
 local zoneOfMap = {}
 local rawMap, zoneMap
 
+function LA.MapChain(map)
+  local id, steps = map, 0
+  return function()
+    if not id or id <= 0 or steps >= MAP_CLIMB then return nil end
+    steps = steps + 1
+    local at, info = id, C_Map.GetMapInfo(id)
+    id = info and info.parentMapID
+    return at, info
+  end
+end
+
 local function climbToZone(map)
-  local id = map
-  for _ = 1, MAP_CLIMB do
-    local info = id and C_Map.GetMapInfo(id)
-    if not info or (info.mapType and info.mapType < ZONE) then return map end
+  for id, info in LA.MapChain(map) do
+    if not info or info.mapType < ZONE then return map end
     if info.mapType == ZONE then return id end
-    id = info.parentMapID
   end
   return map
 end
@@ -224,9 +235,6 @@ function LA.ZoneMapID()
   if not rawMap then readMaps() end
   return zoneMap
 end
-
-
-function LA.InInstance() return IsInInstance() and true or false end
 
 local function mapsChanged() rawMap = nil end
 
@@ -258,12 +266,12 @@ function LA.SendAddon(prefix, text, chatType, target)
     return nil
   end
   if chatType == "WHISPER" then stampWhisper(target, result) end
-  if type(result) == "number" and not ROUTINE_RESULTS[result] then LA.Log("send-result", prefix, chatType, result) end
+  if not ROUTINE_RESULTS[result] then LA.Log("send-result", prefix, chatType, result) end
   return result
 end
 
 function LA.Offline(key)
-  local at = key and offlineAt[key]
+  local at = offlineAt[key]
   return at ~= nil and GetTime() - at < OFFLINE_FOR
 end
 
@@ -288,7 +296,7 @@ local function buildGroupLines()
 end
 
 function LA.GroupLine(text)
-  if type(text) ~= "string" then return nil end
+  if not text then return nil end
   if text ~= classified.text then
     classified.text, classified.kind, classified.key = text, nil, nil
     for _, line in ipairs(groupLines) do
@@ -304,6 +312,8 @@ end
 
 function LA.ExpectGroupLines() groupActAt = GetTime() end
 
+function LA.HasLayerWord(text) return text:find(LAYER_WORD) ~= nil end
+
 local function leadsWithLayer(text)
   for _, pattern in ipairs(LEADING_ASKS) do
     if text:find(pattern) then return true end
@@ -312,7 +322,7 @@ local function leadsWithLayer(text)
 end
 
 function LA.LayerAsk(text, strict)
-  if not text:find("[Ll][Aa][Yy][Ee][Rr]") then return false end
+  if not LA.HasLayerWord(text) then return false end
   if strict and not leadsWithLayer(text) then return false end
   local low = text:lower()
   for _, pattern in ipairs(ASK_BLOCKED_PREFIXES) do
@@ -321,12 +331,10 @@ function LA.LayerAsk(text, strict)
   for _, phrase in ipairs(ASK_BLOCKED_PHRASES) do
     if low:find(phrase, 1, true) then return false end
   end
-  local hit = false
   for word in low:gmatch("%a+") do
     if ASK_BLOCKED_WORDS[word] then return false end
-    if LAYER_WORDS[word] then hit = true end
   end
-  return hit
+  return true
 end
 
 local function hideGroupLine(msg, now)
@@ -349,19 +357,9 @@ end
 
 local function hideSystemLine(_, _, msg)
   msg = LA.Safe(msg)
-  if type(msg) ~= "string" then return false end
+  if not msg then return false end
   local now = GetTime()
   return hideNotFound(msg, now) or hideGroupLine(msg, now)
-end
-
-function LA.ChatRestricted()
-  local ok, restricted = pcall(C_ChatInfo.AreOutgoingAddonChatMessagesRestricted)
-  return ok and restricted == true
-end
-
-function LA.ChatLocked()
-  local ok, locked = pcall(C_ChatInfo.InChatMessagingLockdown)
-  return ok and locked == true
 end
 
 local prefill = {}
@@ -397,7 +395,7 @@ for event, fn in pairs(PREFILL_EVENTS) do EventRegistry:RegisterCallback(event, 
 
 function LA.PrefillChat(text, chatType, target, onEnd)
   local typing = ChatFrameUtil.GetActiveWindow()
-  if typing and (typing:GetText() or "") ~= "" then return nil end
+  if typing and typing:GetText() ~= "" then return nil end
   endPrefill()
   local box = ChatFrameUtil.ChooseBoxForSend(DEFAULT_CHAT_FRAME)
   local saved = {}
@@ -526,7 +524,6 @@ local function pruneGates(now)
 end
 
 function LA.Gate(kind, key, gap, peek)
-  if not key then return false end
   local byKey = gates[kind] or {}
   gates[kind] = byKey
   local now, last = GetTime(), byKey[key]
@@ -545,7 +542,7 @@ Book.__index = Book
 local function pruneBook(entries, now)
   local cutoff, keys = now - BOOK_DAYS * DAY, {}
   for key, e in pairs(entries) do
-    if type(e) ~= "table" or (e.at or 0) < cutoff then entries[key] = nil else keys[#keys + 1] = key end
+    if e.at < cutoff then entries[key] = nil else keys[#keys + 1] = key end
   end
   if #keys <= BOOK_MAX then return #keys end
   table.sort(keys, function(x, y) return entries[x].at > entries[y].at end)
@@ -615,8 +612,8 @@ function LA.LeaderUnit()
 end
 
 function LA.PhaseOf(unit)
-  local ok, phase = pcall(UnitPhaseReason, unit)
-  if not ok or secret(phase) then return false end
+  local phase = UnitPhaseReason(unit)
+  if secret(phase) then return false end
   return phase
 end
 
@@ -668,7 +665,7 @@ end)
 local tokens = {}
 local labelEpoch, label
 
-function LA.LayerEpoch() return LA.char and LA.char.epoch or 0 end
+function LA.LayerEpoch() return LA.char.epoch end
 
 function LA.LayerToken(netId)
   local epoch, token = LA.LayerEpoch(), tokens[netId]
@@ -691,7 +688,7 @@ end
 function LA.Moved(why)
   LA.char.epoch = LA.LayerEpoch() + 1
   LA.Log("moved", why, LA.Label())
-  if LA.Setting("sound") then pcall(PlaySound, SOUNDKIT.READY_CHECK) end
+  if LA.Setting("sound") then PlaySound(SOUNDKIT.READY_CHECK) end
   LA.Refresh()
 end
 
@@ -724,7 +721,7 @@ function Limit.Refused()
   local c, now = LA.char, time()
   local n, lastMove = movesWithin(c, now, HOUR), c.moves[#c.moves]
   if n > 0 then c.learned.count = n end
-  c.hold = { untilAt = (lastMove or now) + (c.learned.window or HOUR), lastMove = lastMove, count = n }
+  c.hold = { untilAt = (lastMove or now) + (c.learned.window or HOUR), lastMove = lastMove }
   c.lockouts[#c.lockouts + 1] = { at = now, count = n, lastMove = lastMove, window = c.learned.window }
   if #c.lockouts > LOCKOUTS_MAX then table.remove(c.lockouts, 1) end
   LA.Log("refused", n, "learned", c.learned.count, "window", c.learned.window)
@@ -758,8 +755,8 @@ function LA.Countdown(sec)
   end
   local below = SECONDS_SHOWN
   for _, minutes in ipairs(COUNTDOWN_MINUTES) do
-    if sec <= minutes * 60 then return "~" .. minutes .. "m", sec - below end
-    below = minutes * 60
+    if sec <= minutes * MINUTE then return "~" .. minutes .. "m", sec - below end
+    below = minutes * MINUTE
   end
   return "~1hr", sec - below
 end
@@ -801,13 +798,13 @@ end
 
 function LA.ClearFlash() flash.untilAt = 0 end
 
-local function confirmRefresh() pcall(C_PlayerInteractionManager.ShardTransferConfirm) end
+local function confirmRefresh() C_PlayerInteractionManager.ShardTransferConfirm() end
 
 local REFRESH_NOTICE = { text = "", tone = "warn", button = { text = "Refresh now", onClick = confirmRefresh } }
 
 local function clock(sec)
   sec = math.max(0, math.floor(sec + 0.5))
-  return string.format("%d:%02d", math.floor(sec / 60), sec % 60)
+  return string.format("%d:%02d", math.floor(sec / MINUTE), sec % MINUTE)
 end
 
 local view = {}
@@ -860,7 +857,7 @@ end
 LA.On("ZONE_CHANGED_NEW_AREA", zoneChanged)
 LA.On("PLAYER_ENTERING_WORLD", zoneChanged)
 
-local function evictionLeft() return tonumber(LA.Safe(GetEvictionTimeRemaining())) or 0 end
+local function evictionLeft() return LA.Safe(GetEvictionTimeRemaining()) or 0 end
 
 local function onTransferImminent()
   refreshAt = GetTime() + evictionLeft()
@@ -917,7 +914,7 @@ local function watchChat()
   notFoundPattern = linePattern(ERR_CHAT_PLAYER_NOT_FOUND_S)
   buildGroupLines()
   ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", hideSystemLine)
-  for _, event in ipairs({ "CHAT_MSG_CHANNEL_NOTICE", "CHAT_MSG_CHANNEL_NOTICE_USER" }) do
+  for _, event in ipairs(NOTICE_EVENTS) do
     ChatFrameUtil.AddMessageEventFilter(event, isOurNotice)
     LA.On(event, onChannelNotice)
   end
@@ -1010,7 +1007,7 @@ BINDING_NAME_LAYERANARCHY_FOCUS = "Controller focus"
 
 function LayerAnarchy_Swap() LA.SwapClick() end
 
-function LayerAnarchy_Toggle() LA.SetSetting("hidden", not LA.Setting("hidden")) end
+function LayerAnarchy_Toggle() LA.ToggleSetting("hidden") end
 
 function LayerAnarchy_Focus() LA.UI.Focus() end
 
@@ -1049,8 +1046,8 @@ end
 
 local function printDiag()
   local v, c = LA.View(), LA.char
-  print(string.format("|cffe8cc6aLayer Anarchy %s|r %s · %s · restricted=%s", LA.VERSION, v.label, tostring(v.status),
-    tostring(LA.ChatRestricted())))
+  print(string.format("%s %s %s · %s · restricted=%s", TITLE, LA.VERSION, v.label, v.status,
+    tostring(C_ChatInfo.AreOutgoingAddonChatMessagesRestricted())))
   print(string.format("moves=%d learned=%s window=%s lockouts=%d", #c.moves, tostring(c.learned.count),
     tostring(c.learned.window), #c.lockouts))
   print("missing APIs: " .. missingApis())
@@ -1068,12 +1065,12 @@ local function cpuShare(metric)
 end
 
 local function printPerf()
-  local M = Enum.AddOnProfilerMetric
+  local M, P = Enum.AddOnProfilerMetric, C_AddOnProfiler
   local recent, recentShare = cpuShare(M.RecentAverageTime)
   local average, averageShare = cpuShare(M.SessionAverageTime)
   print(string.format("%s cpu: now %.3f ms (%.2f%%), avg %.3f ms (%.2f%%), peak %.2f ms, ticks >1ms %d", TITLE,
-    recent, recentShare, average, averageShare, C_AddOnProfiler.GetAddOnMetric(ADDON, M.PeakTime),
-    C_AddOnProfiler.GetAddOnMetric(ADDON, M.CountTimeOver1Ms)))
+    recent, recentShare, average, averageShare, P.GetAddOnMetric(ADDON, M.PeakTime),
+    P.GetAddOnMetric(ADDON, M.CountTimeOver1Ms)))
   UpdateAddOnMemoryUsage()
   print(string.format("memory: %.0f KB", GetAddOnMemoryUsage(ADDON)))
 end
@@ -1099,7 +1096,7 @@ end
 SLASH_LAYERANARCHY1 = "/la"
 SLASH_LAYERANARCHY2 = "/layeranarchy"
 SlashCmdList.LAYERANARCHY = function(msg)
-  local text = (msg or ""):lower():match("^%s*(.-)%s*$")
+  local text = msg:lower():match("^%s*(.-)%s*$")
   if text ~= "" then return (COMMANDS[text] or printCommands)() end
   LayerAnarchy_Toggle()
   if LA.Setting("hidden") then LA.Print("hidden – /la to show") end

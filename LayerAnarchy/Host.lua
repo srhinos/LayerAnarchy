@@ -33,15 +33,13 @@ local function pruneSent(now)
   for i = #sent, kept + 1, -1 do sent[i] = nil end
 end
 
-local function inviteLimit() return tonumber(LA.Setting("invitesPerHour")) or 0 end
-
 local function limitReached()
-  local limit = inviteLimit()
+  local limit = LA.Setting("invitesPerHour")
   return limit > 0 and Host.Recent(LIMIT_WINDOW) >= limit
 end
 
 local function limitLiftsAt()
-  local at = Host.sent[#Host.sent - inviteLimit() + 1]
+  local at = Host.sent[#Host.sent - LA.Setting("invitesPerHour") + 1]
   return at and at + LIMIT_WINDOW
 end
 
@@ -83,13 +81,13 @@ local function invitesOut()
 end
 
 local function releasable()
-  if not groupIsOurs() or LA.InInstance() or invitesOut() then return nil end
+  if not groupIsOurs() or IsInInstance() or invitesOut() then return nil end
   return lastMove()
 end
 
 local function blocked()
   if LA.disabled or not LA.Setting("help") then return "off" end
-  if LA.InInstance() then return "instance" end
+  if IsInInstance() then return "instance" end
   if UnitOnTaxi("player") and not LA.Setting("hostWhileFlying") then return "flying" end
   if LA.Swap.Busy() then return "swapping" end
   local ours, liftsAt = groupIsOurs()
@@ -108,7 +106,7 @@ local function check(asker, askerZone, blind)
   local key = LA.NameKey(asker)
   if not key or key == LA.MyKey() then return false, "self" end
   local zone = LA.ZoneMapID()
-  if askerZone and zone and tonumber(askerZone) ~= zone then return false, "zone" end
+  if askerZone and zone and askerZone ~= zone then return false, "zone" end
   if not LA.Gate("invite", key, RECENT, true) or (blind and not LA.Gate(blindKind(), key, BACKOFF, true)) then
     return false, "recent"
   end
@@ -306,9 +304,7 @@ local function restore()
   Host.guests, Host.sent = saved.guests, saved.sent
   local now = time()
   for key, g in pairs(Host.guests) do
-    if type(g) ~= "table" or not g.invitedAt or (not g.joinedAt and now - g.invitedAt >= INVITE_WAIT) then
-      Host.guests[key] = nil
-    end
+    if not g.joinedAt and now - g.invitedAt >= INVITE_WAIT then Host.guests[key] = nil end
   end
   pruneSent(now)
 end

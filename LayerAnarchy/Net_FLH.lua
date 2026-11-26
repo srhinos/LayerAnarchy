@@ -12,6 +12,7 @@ local WP_GAP, GQ_GAP, CQ_GAP, DISCOVER_GAP, DR_GAP = 2, 3, 10, 20, 3
 local MSG_MAX, CID_TAG, ID_MIN, ID_MAX = 255, "|CID=", 10000, 99999
 local LANGS = { en = true, pt = true, es = true, de = true, fr = true, ko = true, zh = true, ja = true, ru = true }
 local REASONS = { off = "hosting disabled", instance = "inside an instance" }
+local LAYER_CHANGED = "layer changed"
 local GROUP_CHATS = { PARTY = true, RAID = true, INSTANCE_CHAT = true }
 local HOP_REPLIES = { "LW", "HQ", "LI", "LD", "LA", "LN" }
 
@@ -35,11 +36,16 @@ local function split(s)
   end
 end
 
-local function isNum(v) return type(v) == "string" and v:match("^%d+$") ~= nil end
+local function isNum(v) return v ~= nil and v:find("^%d+$") ~= nil end
+
 local function isKey(v) return isNum(v) and tonumber(v) > 0 end
+
 local function newId() return tostring(math.random(ID_MIN, ID_MAX)) end
+
 local function layerKey() return tostring(LA.LayerToken(NET.id)) end
+
 local function myMap() return LA.RawMapID() or 0 end
+
 local function hostFlag() return LA.Host.Can() and 1 or 0 end
 
 local function send(msg, chatType, target)
@@ -48,6 +54,8 @@ local function send(msg, chatType, target)
 end
 
 local function whisper(msg, target) return send(msg, "WHISPER", target) end
+
+local function refuse(id, target, reason) return whisper(("LN|%s|%s"):format(id, reason), target) end
 
 local function here(map)
   map = tonumber(map)
@@ -60,23 +68,23 @@ end
 local function prunePeers()
   local t = GetTime()
   peerCount = 0
-  for who, p in pairs(peers) do
-    if t - p.t > LIVE then peers[who] = nil else peerCount = peerCount + 1 end
+  for key, p in pairs(peers) do
+    if t - p.t > LIVE then peers[key] = nil else peerCount = peerCount + 1 end
   end
 end
 
-local function see(who, name, map, key, host)
-  local p = peers[who]
+local function see(key, name, map, layer, host)
+  local p = peers[key]
   if not p then
     p = {}
-    peers[who] = p
+    peers[key] = p
     peerCount = peerCount + 1
     if peerCount > PEERS_MAX then prunePeers() end
   end
   p.n, p.t = name, GetTime()
   map = tonumber(map)
   if map and map > 0 then p.m = map end
-  if isKey(key) then p.k = key end
+  if isKey(layer) then p.k = layer end
   if host ~= nil then p.h = tonumber(host) == 1 and 1 or 0 end
 end
 
@@ -93,8 +101,10 @@ end
 
 local nextStep
 
+local function live(st) return st ~= nil and st == cur and st.ask.active end
+
 local function fire(st, gen)
-  if cur == st and st.gen == gen and st.ask.active then st.armed(st) end
+  if live(st) and st.gen == gen then st.armed(st) end
 end
 
 local function arm(st, secs, fn)
@@ -105,6 +115,7 @@ end
 
 local function dropRequest(st)
   st.req = nil
+  st.gen = st.gen + 1
   nextStep(st)
 end
 
@@ -114,24 +125,24 @@ local function endOfferWindow(st)
 end
 
 local function offer(st, name)
-  local who = LA.NameKey(name)
-  if who and not st.offered[who] then
-    st.offered[who] = true
+  local key = LA.NameKey(name)
+  if key and not st.offered[key] then
+    st.offered[key] = true
     st.ask.Offer(name, NET.id)
   end
 end
 
-local function avoided(who) return avoid[who] == LA.LayerEpoch() end
+local function avoided(key) return avoid[key] == LA.LayerEpoch() end
 
-local function candidate(st, who, p, t, hostsOnly)
-  return p.n and p.m and p.k and t - p.t <= LIVE and not st.tried[who] and (not hostsOnly or p.h == 1)
-    and not avoided(who) and LA.ZoneOf(p.m) == st.zone
+local function candidate(st, key, p, t, hostsOnly)
+  return p.n and p.m and p.k and t - p.t <= LIVE and not st.tried[key] and (not hostsOnly or p.h == 1)
+    and not avoided(key) and LA.ZoneOf(p.m) == st.zone
 end
 
 local function pick(st, hostsOnly)
   local list, t = {}, GetTime()
-  for who, p in pairs(peers) do
-    if candidate(st, who, p, t, hostsOnly) then list[#list + 1] = who end
+  for key, p in pairs(peers) do
+    if candidate(st, key, p, t, hostsOnly) then list[#list + 1] = key end
   end
   table.sort(list, function(a, b)
     local bookA, bookB = book.entries[a] ~= nil, book.entries[b] ~= nil
@@ -141,9 +152,9 @@ local function pick(st, hostsOnly)
   return list
 end
 
-local function tryHost(st, who, o)
-  local p = peers[who]
-  st.tried[who], st.tries = true, st.tries + 1
+local function tryHost(st, key, o)
+  local p = peers[key]
+  st.tried[key], st.tries = true, st.tries + 1
   local id
   if o then
     id = st.lqId
@@ -152,17 +163,17 @@ local function tryHost(st, who, o)
     id = newId()
     whisper(("DR|%s|%d|%s|%s"):format(id, p.m, p.k, layerKey()), p.n)
   end
-  st.req = { id = id, who = who, name = p.n }
+  st.req = { id = id, key = key, name = p.n }
   st.ask.Asked(p.n)
   arm(st, REPLY_WAIT, dropRequest)
 end
 
 local function bestOffer(st)
   local best, bo, t = nil, nil, GetTime()
-  for who, o in pairs(st.offers) do
-    if not st.tried[who] and peers[who] and t - o.t < OFFER_TTL
+  for key, o in pairs(st.offers) do
+    if not st.tried[key] and peers[key] and t - o.t < OFFER_TTL
       and (not bo or o.size < bo.size or (o.size == bo.size and o.load < bo.load)) then
-      best, bo = who, o
+      best, bo = key, o
     end
   end
   return best, bo
@@ -172,11 +183,11 @@ local function broadcastLQ(st)
   local list = pick(st, false)
   if not list[1] then return end
   st.lqId = newId()
-  local key = layerKey()
+  local layer = layerKey()
   for i = 1, math.min(#list, LQ_MAX) do
     local p = peers[list[i]]
     st.lqTo[list[i]] = true
-    whisper(("LQ|%s|%d|*|%s|%s|LANG=%s"):format(st.lqId, p.m, key, key, lang), p.n)
+    whisper(("LQ|%s|%d|*|%s|%s|LANG=%s"):format(st.lqId, p.m, layer, layer, lang), p.n)
     st.ask.Asked(p.n)
   end
   st.waiting = true
@@ -184,7 +195,7 @@ local function broadcastLQ(st)
 end
 
 nextStep = function(st)
-  if cur ~= st or not st.ask.active or not st.zone or st.req or st.waiting or st.tries >= MAX_TRIES then return end
+  if not live(st) or st.req or st.waiting or st.tries >= MAX_TRIES then return end
   local best, bo = bestOffer(st)
   if best then return tryHost(st, best, bo) end
   local hosts = pick(st, true)
@@ -194,21 +205,21 @@ end
 
 local function poke() if cur then nextStep(cur) end end
 
-local function onOffer(f, who, sender)
+local function onOffer(f, key, sender)
   local st = cur
-  if not st or not st.ask.active or f[2] ~= st.lqId or not st.lqTo[who] then return end
+  if not live(st) or f[2] ~= st.lqId or not st.lqTo[key] then return end
   local map = tonumber(f[3])
   if not map or not isKey(f[4]) then return end
-  see(who, sender, map, f[4], 1)
-  st.offers[who] = { m = map, k = f[4], size = tonumber(f[5]) or 0, load = tonumber(f[6]) or 0, t = GetTime() }
+  see(key, sender, map, f[4], 1)
+  st.offers[key] = { m = map, k = f[4], size = tonumber(f[5]) or 0, load = tonumber(f[6]) or 0, t = GetTime() }
   offer(st, sender)
   nextStep(st)
 end
 
-local function onHop(cmd, f, who)
+local function onHop(cmd, f, key)
   local st = cur
-  local r = st and st.req
-  if not r or r.done or f[2] ~= r.id or who ~= r.who or not st.ask.active then return end
+  local r = live(st) and st.req
+  if not r or r.done or f[2] ~= r.id or key ~= r.key then return end
   if cmd == "LW" or cmd == "HQ" then
     if r.ack then return end
     r.ack = true
@@ -224,122 +235,121 @@ local function onHop(cmd, f, who)
     end
     offer(st, r.name)
   else
-    if cmd == "LN" and f[3] == "layer changed" and peers[who] then peers[who].k = nil end
+    if cmd == "LN" and f[3] == LAYER_CHANGED and peers[key] then peers[key].k = nil end
     st.ask.Refuse(r.name)
-    st.req = nil
-    st.gen = st.gen + 1
-    nextStep(st)
+    dropRequest(st)
   end
 end
 
-local function serve(id, sender, zone)
+local function hostAsk(id, sender, zone)
   local ok, why = LA.Host.Can(sender, zone)
-  if not ok then return whisper(("LN|%s|%s"):format(id, REASONS[why] or "busy"), sender) end
+  if not ok then return refuse(id, sender, REASONS[why] or "busy") end
   whisper("LW|" .. id, sender)
   if LA.Host.Invite(sender, NET.id) then
     whisper("LI|" .. id, sender)
   else
-    whisper(("LN|%s|invite failed"):format(id), sender)
+    refuse(id, sender, "invite failed")
   end
 end
 
-local function direct(f, ct, who, sender, gap)
+local function direct(f, ct, key, sender, gap)
   local id = f[2]
   if ct ~= "WHISPER" or not isNum(id) or not isKey(f[4]) then return end
-  if gap and not LA.Gate("flh dr", who, gap) then return end
-  if not here(f[3]) or f[4] ~= layerKey() then return whisper(("LN|%s|layer changed"):format(id), sender) end
-  serve(id, sender, nil)
+  if gap and not LA.Gate("flh dr", key, gap) then return end
+  if not here(f[3]) or f[4] ~= layerKey() then return refuse(id, sender, LAYER_CHANGED) end
+  hostAsk(id, sender)
 end
 
-local function rememberOffer(who, id, zone)
+local function rememberOffer(key, id, zone)
   local t = GetTime()
   if t - lastOfferAt > OFFER_KEEP then wipe(offersMade) end
   lastOfferAt = t
-  local o = offersMade[who] or {}
+  local o = offersMade[key] or {}
   o.id, o.t, o.zone = id, t, zone
-  offersMade[who] = o
+  offersMade[key] = o
 end
 
-local H = {}
+local HANDLERS = {}
 
-H.WP = function(f, ct, who, sender)
+function HANDLERS.WP(f, ct, key, sender)
   if ct ~= "WHISPER" or not isNum(f[2]) then return end
-  see(who, sender, f[5], f[6], f[7])
-  if LA.Gate("flh wp", who, WP_GAP) then
+  see(key, sender, f[5], f[6], f[7])
+  if LA.Gate("flh wp", key, WP_GAP) then
     whisper(("WR|%s|%s|%s|%d|%s|%d|%s"):format(f[2], realm, WIRE, myMap(), layerKey(), hostFlag(), tail), sender)
   end
   poke()
 end
 
-H.WR = function(f, ct, who, sender)
+function HANDLERS.WR(f, ct, key, sender)
   if ct ~= "WHISPER" then return end
-  see(who, sender, f[5], f[6], f[7])
+  see(key, sender, f[5], f[6], f[7])
   poke()
 end
 
-H.HI = function(f, ct, who, sender)
-  see(who, sender, f[2], f[3], f[4])
+function HANDLERS.HI(f, ct, key, sender)
+  see(key, sender, f[2], f[3], f[4])
   if ct == "GUILD" then guildHI() end
   poke()
 end
 
-H.GQ = function(_, ct, who)
-  if GROUP_CHATS[ct] and LA.Gate("flh gq", who, GQ_GAP) then send(hiMsg(), ct) end
+function HANDLERS.GQ(_, ct, key)
+  if GROUP_CHATS[ct] and LA.Gate("flh gq", key, GQ_GAP) then send(hiMsg(), ct) end
 end
 
-H.CQ = function(f, ct, who, sender)
+function HANDLERS.CQ(f, ct, key, sender)
   if (ct ~= "WHISPER" and ct ~= "CHANNEL") or not isNum(f[2]) then return end
-  see(who, sender, f[3], f[4], f[5])
-  if (ct == "WHISPER" or here(f[3])) and LA.Gate("flh cq", who, CQ_GAP) then
+  see(key, sender, f[3], f[4], f[5])
+  if (ct == "WHISPER" or here(f[3])) and LA.Gate("flh cq", key, CQ_GAP) then
     whisper(("CA|%s|%d|%s|%d|%s|%s|%s"):format(f[2], myMap(), layerKey(), hostFlag(), WIRE, realm, tail), sender)
   end
   poke()
 end
 
-H.CA = function(f, ct, who, sender)
+function HANDLERS.CA(f, ct, key, sender)
   if ct ~= "WHISPER" then return end
-  see(who, sender, f[3], f[4], f[5])
+  see(key, sender, f[3], f[4], f[5])
   poke()
 end
 
-H.DISCOVER = function(f, ct, who, sender)
-  see(who, sender, f[2], f[3])
-  if here(f[2]) and LA.Gate("flh discover", who, DISCOVER_GAP) then
-    local key = layerKey()
-    whisper(("P|%d|%s|%s|%s|%s"):format(myMap(), key, WIRE, key, tail), sender)
+function HANDLERS.DISCOVER(f, ct, key, sender)
+  see(key, sender, f[2], f[3])
+  if here(f[2]) and LA.Gate("flh discover", key, DISCOVER_GAP) then
+    local layer = layerKey()
+    whisper(("P|%d|%s|%s|%s|%s"):format(myMap(), layer, WIRE, layer, tail), sender)
   end
   if ct == "GUILD" then guildHI() end
 end
 
-H.LQ = function(f, ct, who, sender)
+function HANDLERS.LQ(f, ct, key, sender)
   if (ct ~= "WHISPER" and ct ~= "CHANNEL") or not isNum(f[2]) then return end
-  see(who, sender, f[3], f[5])
-  local key = layerKey()
-  if not here(f[3]) or (f[4] ~= "*" and f[4] ~= key) or f[5] == key then return end
+  see(key, sender, f[3], f[5])
+  local layer = layerKey()
+  if not here(f[3]) or (f[4] ~= "*" and f[4] ~= layer) or f[5] == layer then return end
   local zone = LA.ZoneOf(f[3])
   if not LA.Host.Can(sender, zone) then return end
-  rememberOffer(who, f[2], zone)
-  whisper(("LO|%s|%d|%s|%d|%d|ACT=0|LANG=%s"):format(f[2], myMap(), key, GetNumGroupMembers(),
+  rememberOffer(key, f[2], zone)
+  whisper(("LO|%s|%d|%s|%d|%d|ACT=0|LANG=%s"):format(f[2], myMap(), layer, GetNumGroupMembers(),
     LA.Host.Recent(LOAD_WINDOW), lang), sender)
 end
 
-H.LR = function(f, _, who, sender)
+function HANDLERS.LR(f, _, key, sender)
   local id = f[2]
   if not isNum(id) then return end
-  local o = offersMade[who]
-  offersMade[who] = nil
-  if not o or o.id ~= id or GetTime() - o.t > OFFER_KEEP then
-    return whisper(("LN|%s|host unavailable"):format(id), sender)
-  end
-  if not here(f[3]) or f[4] ~= layerKey() then return whisper(("LN|%s|layer changed"):format(id), sender) end
-  serve(id, sender, o.zone)
+  local o = offersMade[key]
+  offersMade[key] = nil
+  if not o or o.id ~= id or GetTime() - o.t > OFFER_KEEP then return refuse(id, sender, "host unavailable") end
+  if not here(f[3]) or f[4] ~= layerKey() then return refuse(id, sender, LAYER_CHANGED) end
+  hostAsk(id, sender, o.zone)
 end
 
-H.DR = function(f, ct, who, sender) direct(f, ct, who, sender, DR_GAP) end
-H.ZI = function(f, ct, who, sender) direct(f, ct, who, sender) end
-H.LO = function(f, _, who, sender) onOffer(f, who, sender) end
+function HANDLERS.DR(f, ct, key, sender) direct(f, ct, key, sender, DR_GAP) end
+
+function HANDLERS.ZI(f, ct, key, sender) direct(f, ct, key, sender) end
+
+function HANDLERS.LO(f, _, key, sender) onOffer(f, key, sender) end
+
 for _, cmd in ipairs(HOP_REPLIES) do
-  H[cmd] = function(f, _, who) onHop(cmd, f, who) end
+  HANDLERS[cmd] = function(f, _, key) onHop(cmd, f, key) end
 end
 
 local function localeLang()
@@ -348,7 +358,7 @@ local function localeLang()
 end
 
 local function realmTag()
-  local r = tostring(LA.Safe(GetNormalizedRealmName() or GetRealmName()) or ""):gsub("[|:%s]", "")
+  local r = (LA.Safe(GetNormalizedRealmName() or GetRealmName()) or ""):gsub("[|:%s]", "")
   return r ~= "" and r or "?"
 end
 
@@ -357,45 +367,32 @@ function NET.Init(net)
   lang, realm = localeLang(), realmTag()
   tail = ("LANG=%s|POP=0|BUILD=%s"):format(lang, VERSION)
   local guid = LA.Safe(UnitGUID("player"))
-  cid = guid and (tostring(guid):gsub("[|:]", "_"))
+  cid = guid and guid:gsub("[|:]", "_")
 end
 
-function NET.OnAddon(_, _, text, chatType, sender, who)
-  if type(text) ~= "string" then return end
-  local handler = H[text:match("^[^|:]+")]
-  if handler then handler(split(text), chatType, who, sender) end
+function NET.OnAddon(_, _, text, chatType, sender, key)
+  if not text then return end
+  local handler = HANDLERS[text:match("^[^|:]+")]
+  if handler then handler(split(text), chatType, key, sender) end
 end
 
 function NET.Ask(_, ask)
-  if cur then cur.gen = cur.gen + 1 end
+  if not ask.zone then return end
   cur = { ask = ask, zone = ask.zone, gen = 0, tries = 0, tried = {}, offers = {}, offered = {}, lqTo = {} }
   nextStep(cur)
 end
 
-function NET.StopAsk(_, ask)
-  if cur and cur.ask == ask then
-    cur.gen = cur.gen + 1
-    cur = nil
-  end
+function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur = nil end end
+
+function NET.OnSwapResult(_, _, result, hostName)
+  local key = LA.NameKey(hostName)
+  if key and (result == "same" or result == "moved") then avoid[key] = LA.LayerEpoch() end
 end
 
 function NET.OnHostFailed(_, ask, why, hostName)
-  local who = LA.NameKey(hostName)
-  if who and why == "same" then avoid[who] = LA.LayerEpoch() end
-  if cur and cur.ask == ask then
-    cur.req = nil
-    cur.gen = cur.gen + 1
-    nextStep(cur)
-  end
-end
-
-function NET.OnSwapResult(_, ask, result, hostName)
-  local who = LA.NameKey(hostName)
-  if who and (result == "same" or result == "moved") then avoid[who] = LA.LayerEpoch() end
-  if cur and cur.ask == ask then
-    cur.gen = cur.gen + 1
-    cur = nil
-  end
+  local key = LA.NameKey(hostName)
+  if key and why == "same" then avoid[key] = LA.LayerEpoch() end
+  if cur and cur.ask == ask then dropRequest(cur) end
 end
 
 LA.RegisterNetwork(NET)

@@ -75,7 +75,7 @@ local FAKE = {
 local ticker, step, faking = nil, 1, false
 local fakeStats = {}
 
-local function window() return FAKE[LA.Setting("statsWindow")] or FAKE.hour end
+local function window() return FAKE[LA.Setting("statsWindow")] end
 
 function fakeStats.Net(netId) return unpack(window().nets[netId]) end
 

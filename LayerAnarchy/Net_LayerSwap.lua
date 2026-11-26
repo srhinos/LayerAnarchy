@@ -4,9 +4,8 @@ local NET = { id = "layerswap", name = "LayerSwap", prefixes = { "LayerSwap" } }
 local PREFIX = NET.prefixes[1]
 local RULES_TAG = "r3"
 local BURST, ROUND_GAP, MAX_ASK = 8, 1, 49
-local HEARD_GAP = 10
+local HEARD_GAP, LAYER_ID_MAX, EPOCH_MOD = 10, 24, 100
 local WHO_WAIT, WHO_LATE_FOR, WHO_REUSE, WHO_MAX = 5, 30, 10, 50
-local LAYER_ID_MAX = 24
 local THROTTLED = Enum.SendAddonMessageResult.AddonMessageThrottle
 local WHO_ORIGIN = Enum.SocialWhoOrigin.Social
 local WHO_LISTS = { "LFGWhoListFrame", "FriendsFrame" }
@@ -103,16 +102,14 @@ onWhoList = function()
   if not p then return end
   if p.late then return closeWho(p) end
   local num, total = C_FriendList.GetNumWhoResults()
-  num = tonumber(LA.Safe(num)) or 0
-  advanceRound(num, tonumber(LA.Safe(total)) or num)
+  num = LA.Safe(num) or 0
+  advanceRound(num, LA.Safe(total) or num)
   whoDone(p, whoNames(num, p.zoneName))
 end
 
 local function replyLater(callback, names, why) LA.After(0, callback, names, why) end
 
 function LA.Who(zone, callback)
-  zone = tonumber(zone)
-  if not zone then return replyLater(callback, nil, "error") end
   local last = who.last
   if last and last.zone == zone and GetTime() - last.at < WHO_REUSE then return replyLater(callback, last.names) end
   local p = who.pending
@@ -127,7 +124,7 @@ function LA.Who(zone, callback)
   end
   local info = C_Map.GetMapInfo(zone)
   local zoneName = info and LA.Safe(info.name)
-  if type(zoneName) ~= "string" or zoneName == "" then return replyLater(callback, nil, "nozone") end
+  if not zoneName or zoneName == "" then return replyLater(callback, nil, "nozone") end
   local query = WHO_TAG_ZONE .. '"' .. zoneName .. '"'
   if who.roundZone ~= zone then who.round, who.roundZone = 0, zone end
   if not muteWhoLists() and InCombatLockdown() then
@@ -148,14 +145,12 @@ function LA.Who(zone, callback)
   LA.After(WHO_WAIT, whoTimeout, p)
 end
 
-local book
-local adopted
-local cur
+local book, adopted, cur
 
 local function ourId()
   local epoch = LA.LayerEpoch()
   if adopted and adopted.epoch == epoch then return adopted.id end
-  return LA.LayerToken(NET.id) .. "-" .. (epoch % 100)
+  return LA.LayerToken(NET.id) .. "-" .. (epoch % EPOCH_MOD)
 end
 
 local function whisper(text, target) return LA.SendAddon(PREFIX, text, "WHISPER", target) end
@@ -169,10 +164,6 @@ local function parseTag(text)
   for id in body:gmatch("not%s+(%d+%-%d+)") do tag.nots[#tag.nots + 1] = id end
   tag.rules = (" " .. body .. " "):match("%sr(%d+)%s")
   return tag
-end
-
-local function remember(sender, zone, isHost)
-  book:Remember(sender, { zone = zone, host = isHost })
 end
 
 local function hostsFirst(names)
@@ -202,7 +193,7 @@ local function position(zone)
   local pos = C_Map.GetPlayerMapPosition(zone, "player")
   if not pos then return nil end
   local x, y = LA.Safe(pos.x), LA.Safe(pos.y)
-  if type(x) ~= "number" or type(y) ~= "number" or x < 0 or x > 1 or y < 0 or y > 1 then return nil end
+  if not (x and y) or x < 0 or x > 1 or y < 0 or y > 1 then return nil end
   if x == 0 and y == 0 then return nil end
   return string.format("%.1f,%.1f", x * 100, y * 100)
 end
@@ -257,50 +248,10 @@ local function enqueue(st, names)
   return added
 end
 
-function NET.Ask(_, ask)
-  local zone = tonumber(ask.zone)
-  if not zone then return end
-  local st = { ask = ask, zone = zone, notId = ourId(), queue = {}, seen = {}, i = 1, replies = {} }
-  st.line = request(zone, st.notId)
-  cur = st
-  LA.Who(zone, function(names)
-    if not live(st) then return end
-    st.queue = hostsFirst(names or bookHosts(zone))
-    st.more = who.capped == true
-    markSeen(st, st.queue)
-    round(st)
-  end)
-end
-
-function NET.More(_, ask)
-  local st = cur
-  if not (live(st) and st.ask == ask) then return end
-  who.last = nil
-  st.more = false
-  progress(st)
-  LA.Who(st.zone, function(names)
-    if not live(st) then return end
-    local added = names and enqueue(st, names) or 0
-    st.more = who.capped and added > 0
-    if added > 0 then round(st) else progress(st) end
-  end)
-end
-
-function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur.stopped = true end end
-
-function NET.OnSwapResult(_, ask, result, hostName)
-  local st = cur
-  if result ~= "moved" or not st or st.ask ~= ask then return end
-  local reply = st.replies[LA.NameKey(hostName) or ""]
-  if reply and reply.zone == st.zone and reply.layer ~= st.notId then
-    adopted = { id = reply.layer, epoch = LA.LayerEpoch() }
-  end
-end
-
 local function onHeard(sender, key, asker, layer, zone, flag)
   if not LA.IsMe(asker) then return end
   zone = tonumber(zone)
-  remember(sender, zone, flag == "h" or flag == "s")
+  book:Remember(sender, { zone = zone, host = flag == "h" or flag == "s" })
   local st = cur
   if not live(st) then return end
   if layer:match("^%d+%-%d+$") and #layer <= LAYER_ID_MAX then st.replies[key] = { layer = layer, zone = zone } end
@@ -308,7 +259,7 @@ local function onHeard(sender, key, asker, layer, zone, flag)
 end
 
 local function onSame(sender)
-  remember(sender, nil, true)
+  book:Remember(sender, { host = true })
   local st = cur
   if live(st) then st.ask.Refuse(sender) end
 end
@@ -341,13 +292,19 @@ end
 
 local function onWhisper(_, text, sender)
   text, sender = LA.Safe(text), LA.Safe(sender)
-  if type(text) ~= "string" or type(sender) ~= "string" or not LA.LayerAsk(text) then return end
+  if not (text and sender and LA.LayerAsk(text)) then return end
   local tag = parseTag(text)
   if LA.Host.Can(sender, tag and tag.zone, true) then LA.Host.Invite(sender, NET.id) end
 end
 
+function NET.Init(net)
+  book = LA.Book(net.id)
+  LA.On("CHAT_MSG_WHISPER", onWhisper)
+  LA.On("GROUP_LEFT", resume)
+end
+
 function NET.OnAddon(_, _, text, chatType, sender, key)
-  if type(text) ~= "string" then return end
+  if not text then return end
   local whispered = chatType == "WHISPER"
   if whispered and text:find("^[Ii][Nn][Vv] [Ll][Aa][Yy][Ee][Rr]") then return hostAsk(text, sender, key) end
   local asker, layer, zone, flag = text:match("^heard (.-)|([^|]*)|([^|]*)|([^|]*)$")
@@ -355,10 +312,44 @@ function NET.OnAddon(_, _, text, chatType, sender, key)
   if whispered and text == "same" then onSame(sender) end
 end
 
-function NET.Init(net)
-  book = LA.Book(net.id)
-  LA.On("CHAT_MSG_WHISPER", onWhisper)
-  LA.On("GROUP_LEFT", resume)
+function NET.Ask(_, ask)
+  local zone = ask.zone
+  if not zone then return end
+  local st = { ask = ask, zone = zone, notId = ourId(), queue = {}, seen = {}, i = 1, replies = {} }
+  st.line = request(zone, st.notId)
+  cur = st
+  LA.Who(zone, function(names)
+    if not live(st) then return end
+    st.queue = hostsFirst(names or bookHosts(zone))
+    st.more = who.capped
+    markSeen(st, st.queue)
+    round(st)
+  end)
+end
+
+function NET.More(_, ask)
+  local st = cur
+  if not (live(st) and st.ask == ask) then return end
+  who.last = nil
+  st.more = false
+  progress(st)
+  LA.Who(st.zone, function(names)
+    if not live(st) then return end
+    local added = names and enqueue(st, names) or 0
+    st.more = who.capped and added > 0
+    if added > 0 then round(st) else progress(st) end
+  end)
+end
+
+function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur.stopped = true end end
+
+function NET.OnSwapResult(_, ask, result, hostName)
+  local st = cur
+  if result ~= "moved" or not st or st.ask ~= ask then return end
+  local reply = st.replies[LA.NameKey(hostName)]
+  if reply and reply.zone == st.zone and reply.layer ~= st.notId then
+    adopted = { id = reply.layer, epoch = LA.LayerEpoch() }
+  end
 end
 
 LA.RegisterNetwork(NET)

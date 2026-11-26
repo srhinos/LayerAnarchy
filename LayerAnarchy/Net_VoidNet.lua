@@ -9,7 +9,7 @@ local CODE_PRIME, SALT_PRIME, PW_PRIME, HASH_MUL = 7919, 97, 104729, 31
 local HORDE, ALLIANCE, NEUTRAL, HOUR = 1, 2, 3, 3600
 local JITTER_MIN, JITTER_MAX, JOIN_DEBOUNCE, REJOIN_AFTER, REJOIN_TRIES = 20, 40, 10, 10, 3
 local ROSTER_FRESH, ROSTER_MAX, ROSTER_WAIT, ROSTER_SETTLE = 300, 300, 8, 2
-local FANOUT, RELAY, WAVES, WAVE_GAP, KNOWN_FIRST, RELAY_QUEUE_MAX = 10, 4, 3, 8, 3, 20
+local FANOUT, RELAY, WAVES, WAVE_GAP, KNOWN_FIRST, RELAY_QUEUE_MAX, RANDOM_TRIES = 10, 4, 3, 8, 3, 20, 3
 local HR_WAIT, OK_WAIT, A_WINDOW, ANSWER_GAP, Q_GAP = 12, 30, 60, 60, 60
 local CENSUS_HOST, CENSUS_KEEP, HEARD_KEEP, REACH, PING_GAP = 300, 600, 7200, 3600, 10
 local IN_MAX, IN_WINDOW, QUEUE_MAX, BURST, REFILL = 20, 60, 60, 8, 1.1
@@ -18,27 +18,23 @@ local NAME_MAX, PAIR_MAX, TEXT_MAX, VOTES_NEEDED = 48, 20, 255, 2
 local NONCE_MIN, NONCE_MAX = 100000, 999999
 local RESULT = Enum.SendAddonMessageResult
 local REFUSALS = { WRONG_PASSWORD = true, BANNED = true, password = true }
-local HR_REPLY = { off = "off", zone = "layer" }
+local REASONS = { off = "off", zone = "layer" }
 local UNLOCK_EVENTS = { "PLAYER_REGEN_ENABLED", "ZONE_CHANGED_NEW_AREA", "ENCOUNTER_END", "ADDON_RESTRICTION_STATE_CHANGED" }
 
 local db, book
 local faction
 local chan
 local started, waiting, joinTries = false, false, 0
-local roster = { names = {}, ks = {}, keys = {}, at = 0 }
+local roster = { names = {}, keyList = {}, keys = {}, at = 0 }
 local reading
 local heard, census, seenQ, inbound, votes = {}, {}, {}, {}, {}
-local asking
+local cur
 local queue, tokens, filled, pumping, held = {}, BURST, 0, false, false
 local join, refused, check, scheduleHour
 
-local function now() return GetTime() end
-
 local function newNonce() return tostring(math.random(NONCE_MIN, NONCE_MAX)) end
 
-local function validName(n)
-  return type(n) == "string" and #n >= 1 and #n <= NAME_MAX and not n:find("[|:]")
-end
+local function validName(n) return n and #n >= 1 and #n <= NAME_MAX and not n:find("[|:]") end
 
 local function shuffle(t)
   for i = #t, 2, -1 do
@@ -80,7 +76,7 @@ local function pair() return LA.LayerToken(NET.id) .. "-0" end
 
 local function canon(p) return p and p:match("^(%d+)%-%d+$") end
 
-local function locked() return InCombatLockdown() or LA.ChatLocked() end
+local function locked() return InCombatLockdown() or C_ChatInfo.InChatMessagingLockdown() end
 
 local pump
 
@@ -91,7 +87,7 @@ end
 
 pump = function()
   if held then return end
-  local t = now()
+  local t = GetTime()
   tokens = math.min(BURST, tokens + (t - filled) / REFILL)
   filled = t
   while tokens >= 1 and queue[1] do
@@ -114,13 +110,12 @@ pump = function()
 end
 
 local function send(prefix, text, to, urgent, life)
-  if not to then return end
   if held and not locked() then held = false end
   if #queue >= QUEUE_MAX then
     if not urgent then return end
     table.remove(queue)
   end
-  local m = { prefix = prefix, text = text, to = to, urgent = urgent, exp = life and (now() + life) or nil }
+  local m = { prefix = prefix, text = text, to = to, urgent = urgent, exp = life and (GetTime() + life) or nil }
   if urgent then
     local i = 1
     while queue[i] and queue[i].urgent do i = i + 1 end
@@ -131,29 +126,29 @@ local function send(prefix, text, to, urgent, life)
   pump()
 end
 
-local function reachable(k, t)
-  if LA.Offline(k) then return false end
-  local h = heard[k]
-  return roster.keys[k] ~= nil or (h ~= nil and t - h.t < REACH)
+local function reachable(key, t)
+  if LA.Offline(key) then return false end
+  local h = heard[key]
+  return roster.keys[key] ~= nil or (h ~= nil and t - h.t < REACH)
 end
 
 local function pick(n, exclude)
-  local t, me = now(), LA.MyKey()
+  local t, me = GetTime(), LA.MyKey()
   local used, hosts, known, strangers = {}, {}, {}, {}
-  local function usable(k)
-    if not k or k == me or used[k] or exclude[k] then return false end
-    if not LA.Gate("voidnet ask", k, Q_GAP, true) or not reachable(k, t) then return false end
-    used[k] = true
+  local function usable(key)
+    if key == me or used[key] or exclude[key] then return false end
+    if not LA.Gate("voidnet ask", key, Q_GAP, true) or not reachable(key, t) then return false end
+    used[key] = true
     return true
   end
-  for k, e in pairs(book.entries) do
-    if usable(k) then hosts[#hosts + 1] = roster.keys[k] or e.name end
+  for key, e in pairs(book.entries) do
+    if usable(key) then hosts[#hosts + 1] = roster.keys[key] or e.name end
   end
-  for k, h in pairs(heard) do
-    if usable(k) then known[#known + 1] = h.name end
+  for key, h in pairs(heard) do
+    if usable(key) then known[#known + 1] = h.name end
   end
   for i, name in ipairs(roster.names) do
-    if usable(roster.ks[i]) then strangers[#strangers + 1] = name end
+    if usable(roster.keyList[i]) then strangers[#strangers + 1] = name end
   end
   shuffle(hosts)
   shuffle(known)
@@ -176,12 +171,12 @@ end
 local function pickRandom(n, exclude)
   local out, used, me, list = {}, {}, LA.MyKey(), roster.names
   if #list == 0 then return out end
-  for _ = 1, n * 3 do
+  for _ = 1, n * RANDOM_TRIES do
     if #out >= n then break end
     local i = math.random(1, #list)
-    local k = roster.ks[i]
-    if k and k ~= me and not used[k] and not exclude[k] then
-      used[k] = true
+    local key = roster.keyList[i]
+    if key ~= me and not used[key] and not exclude[key] then
+      used[key] = true
       out[#out + 1] = list[i]
     end
   end
@@ -206,22 +201,21 @@ local function selectedIndex()
 end
 
 local function readNow(idx, count)
-  count = tonumber(count) or 0
-  local names, ks, keys, owner = {}, {}, {}, nil
+  count = count or 0
+  local names, keyList, keys = {}, {}, {}
   local first = count > ROSTER_MAX and math.random(1, count) or 1
   for j = 0, math.min(count, ROSTER_MAX) - 1 do
-    local ok, name, isOwner = pcall(C_ChatInfo.GetChannelRosterInfo, idx, (first + j - 1) % count + 1)
+    local ok, name = pcall(C_ChatInfo.GetChannelRosterInfo, idx, (first + j - 1) % count + 1)
     name = ok and LA.Safe(name) or nil
-    local k = LA.NameKey(name)
-    if k and not keys[k] then
-      keys[k] = name
+    local key = LA.NameKey(name)
+    if key and not keys[key] then
+      keys[key] = name
       names[#names + 1] = name
-      ks[#ks + 1] = k
-      if LA.Safe(isOwner) then owner = name end
+      keyList[#keyList + 1] = key
     end
   end
   if #names == 0 then return false end
-  roster.names, roster.ks, roster.keys, roster.owner, roster.at = names, ks, keys, owner, now()
+  roster.names, roster.keyList, roster.keys, roster.at = names, keyList, keys, GetTime()
   return true
 end
 
@@ -294,8 +288,8 @@ join = function()
   local hour = hourNow()
   local slot = slotFor(hour)
   local name, pw = derive(slot, hour, side())
-  if chan and chan.name == name and now() - chan.at < JOIN_DEBOUNCE then return end
-  chan = { name = name, hour = hour, slot = slot, at = now() }
+  if chan and chan.name == name and GetTime() - chan.at < JOIN_DEBOUNCE then return end
+  chan = { name = name, hour = hour, slot = slot, at = GetTime() }
   LA.LeaveChannels(NET.id, { [name] = true })
   if not LA.ChannelId(name) then joinTries = joinTries + 1 end
   LA.JoinChannel(NET.id, name, pw, onJoined)
@@ -317,17 +311,17 @@ local function sweep(t)
   wipe(seenQ)
   wipe(inbound)
   wipe(votes)
-  for k, c in pairs(census) do
-    if t - c.t > CENSUS_KEEP then census[k] = nil end
+  for key, c in pairs(census) do
+    if t - c.t > CENSUS_KEEP then census[key] = nil end
   end
-  for k, h in pairs(heard) do
-    if t - h.t > HEARD_KEEP then heard[k] = nil end
+  for key, h in pairs(heard) do
+    if t - h.t > HEARD_KEEP then heard[key] = nil end
   end
 end
 
 local function onHour()
   if not (chan and hourNow() == chan.hour) then
-    sweep(now())
+    sweep(GetTime())
     joinTries = 0
     join()
   end
@@ -346,108 +340,75 @@ local function unlocked()
   if waiting then join() end
 end
 
-local function enqueue(a, k)
-  if a.tried[k] or a.queued[k] then return end
-  a.queued[k] = true
-  a.queue[#a.queue + 1] = k
+local function live(st) return st ~= nil and st == cur and st.ask.active end
+
+local function enqueue(st, key)
+  if st.tried[key] or st.queued[key] then return end
+  st.queued[key] = true
+  st.queue[#st.queue + 1] = key
 end
 
-local function freshHost(a, k, t)
-  local c = census[k]
-  return not a.tried[k] and c ~= nil and c.zone == a.zone and t - c.t <= CENSUS_HOST
+local function freshHost(st, key, t)
+  local c = census[key]
+  return not st.tried[key] and c ~= nil and c.zone == st.zone and t - c.t <= CENSUS_HOST
 end
 
 local function tryNext()
-  local a = asking
-  if not a or not a.ask.active or a.cur or IsInGroup() then return end
-  local t = now()
-  while a.queue[1] do
-    local k = table.remove(a.queue, 1)
-    if freshHost(a, k, t) then
-      local c = census[k]
-      local try = { k = k, name = c.name, nonce = newNonce(), at = t }
-      a.tried[k], a.cur, a.nonces[try.nonce] = true, try, k
-      a.ask.Asked(c.name)
-      send(VL, ("HR:1:%d:%s:%s"):format(a.zone, c.pair, try.nonce), c.name, true, HR_WAIT)
-      LA.After(HR_WAIT, check, a, try)
+  local st = cur
+  if not live(st) or st.try or IsInGroup() then return end
+  local t = GetTime()
+  while st.queue[1] do
+    local key = table.remove(st.queue, 1)
+    if freshHost(st, key, t) then
+      local c = census[key]
+      local try = { key = key, name = c.name, nonce = newNonce(), at = t }
+      st.tried[key], st.try, st.nonces[try.nonce] = true, try, key
+      st.ask.Asked(c.name)
+      send(VL, ("HR:1:%d:%s:%s"):format(st.zone, c.pair, try.nonce), c.name, true, HR_WAIT)
+      LA.After(HR_WAIT, check, st, try)
       return
     end
   end
 end
 
-check = function(a, try)
-  if asking ~= a or a.cur ~= try or not a.ask.active then return end
+check = function(st, try)
+  if not live(st) or st.try ~= try then return end
   if IsInGroup() then
     try.grouped = true
     return
   end
-  if try.ok and not try.grouped and now() - try.at < OK_WAIT then
-    LA.After(try.at + OK_WAIT - now(), check, a, try)
+  if try.ok and not try.grouped and GetTime() - try.at < OK_WAIT then
+    LA.After(try.at + OK_WAIT - GetTime(), check, st, try)
     return
   end
-  a.cur = nil
-  if not try.ok then census[try.k] = nil end
+  st.try = nil
+  if not try.ok then census[try.key] = nil end
   tryNext()
 end
 
 local function onGroupLeft()
-  local a = asking
-  if not a then return end
-  if a.cur then check(a, a.cur) else tryNext() end
+  local st = cur
+  if not st then return end
+  if st.try then check(st, st.try) else tryNext() end
 end
 
-local function wave(a, first)
-  if asking ~= a or not a.ask.active or a.waves >= WAVES then return end
-  if not first and a.ask.found > 0 then return end
+local function wave(st, first)
+  if not live(st) or st.waves >= WAVES then return end
+  if not first and st.ask.found > 0 then return end
   local me = LA.Me()
   if not validName(me) then return end
-  local targets = pick(FANOUT, a.asked)
+  local targets = pick(FANOUT, st.asked)
   if #targets == 0 then return end
-  a.waves, a.lastQ = a.waves + 1, now()
-  local text = ("Q:1:1:%d:%s:%s"):format(a.zone, a.nonce, me)
+  st.waves, st.lastQ = st.waves + 1, GetTime()
+  local text = ("Q:1:1:%d:%s:%s"):format(st.zone, st.nonce, me)
   for _, name in ipairs(targets) do
-    local k = LA.NameKey(name)
-    if k then
-      a.asked[k] = true
-      LA.Gate("voidnet ask", k, 0)
-      a.ask.Asked(name)
+    local key = LA.NameKey(name)
+    if key then
+      st.asked[key] = true
+      LA.Gate("voidnet ask", key, 0)
+      st.ask.Asked(name)
       send(VL, text, name, false, Q_TTL)
     end
-  end
-end
-
-function NET.Ask(_, ask)
-  local zone = tonumber(ask.zone)
-  if not zone then return end
-  local a = {
-    ask = ask, zone = zone, nonce = newNonce(), waves = 0, hosts = 0,
-    queue = {}, queued = {}, tried = {}, nonces = {}, asked = {},
-  }
-  asking = a
-  local t = now()
-  for k, c in pairs(census) do
-    if c.zone == zone and t - c.t <= CENSUS_HOST then enqueue(a, k) end
-  end
-  tryNext()
-  wave(a, true)
-  if t - roster.at > ROSTER_FRESH then readRoster(function() wave(a) end) end
-  LA.After(WAVE_GAP, wave, a)
-end
-
-function NET.StopAsk(_, ask) if asking and asking.ask == ask then asking = nil end end
-
-function NET.OnSwapResult(_, _, result, host)
-  local k = LA.NameKey(host)
-  if k and (result == "moved" or result == "same") then census[k] = nil end
-end
-
-function NET.OnHostFailed(_, ask, why, host)
-  local k = LA.NameKey(host)
-  if k and why == "same" then census[k] = nil end
-  local a = asking
-  if a and a.ask == ask and a.cur and a.cur.k == k then
-    a.cur = nil
-    tryNext()
   end
 end
 
@@ -456,38 +417,37 @@ local function relay(zone, nonce, asker, exclude)
   for _, name in ipairs(pickRandom(RELAY, exclude)) do send(VL, text, name, false, RELAY_TTL) end
 end
 
-local function onQ(text, sender, k)
+local function onQ(text, _, key)
   local ttl, zone, nonce, asker = text:match("^Q:1:(%d+):(%d+):(%d+):(.+)$")
   ttl, zone = tonumber(ttl), tonumber(zone)
   if not ttl or ttl > 1 or not validName(asker) then return end
-  local ak = LA.NameKey(asker)
-  if not ak or ak == LA.MyKey() then return end
-  if ttl == 1 and ak ~= k then return end
-  if ttl == 0 and not (roster.keys[ak] or heard[ak]) then return end
-  if seenQ[nonce] == ak then return end
-  seenQ[nonce] = ak
-  if ttl == 1 and #queue < RELAY_QUEUE_MAX then relay(zone, nonce, asker, { [k] = true, [ak] = true }) end
-  if LA.InInstance() or zone ~= LA.ZoneMapID() then return end
-  if not LA.Gate("voidnet answer", ak, ANSWER_GAP) then return end
+  local askerKey = LA.NameKey(asker)
+  if not askerKey or askerKey == LA.MyKey() then return end
+  if ttl == 1 and askerKey ~= key then return end
+  if ttl == 0 and not (roster.keys[askerKey] or heard[askerKey]) then return end
+  if seenQ[nonce] == askerKey then return end
+  seenQ[nonce] = askerKey
+  if ttl == 1 and #queue < RELAY_QUEUE_MAX then relay(zone, nonce, asker, { [key] = true, [askerKey] = true }) end
+  if IsInInstance() or zone ~= LA.ZoneMapID() then return end
+  if not LA.Gate("voidnet answer", askerKey, ANSWER_GAP) then return end
   send(VL, ("A:1:%d:%s:%d"):format(zone, pair(), LA.Host.Can(asker, zone) and 1 or 0), asker, true, A_TTL)
 end
 
-local function onA(text, sender, k)
+local function onA(text, sender, key)
   local zone, p, h = text:match("^A:1:(%d+):(%d+%-%d+):([01])$")
   zone = tonumber(zone)
-  local a = asking
-  if not zone or #p > PAIR_MAX or h ~= "1" or not a or not a.ask.active then return end
-  if zone ~= a.zone or not a.lastQ or now() - a.lastQ > A_WINDOW then return end
-  census[k] = { name = sender, zone = zone, pair = p, t = now() }
-  a.hosts = a.hosts + 1
+  local st = cur
+  if not zone or #p > PAIR_MAX or h ~= "1" or not live(st) then return end
+  if zone ~= st.zone or not st.lastQ or GetTime() - st.lastQ > A_WINDOW then return end
+  census[key] = { name = sender, zone = zone, pair = p, t = GetTime() }
   book:Remember(sender)
-  enqueue(a, k)
+  enqueue(st, key)
   tryNext()
 end
 
-local function hostReply(sender, zone, p)
+local function hostAsk(sender, zone, p)
   local ok, why = LA.Host.Can(sender, zone)
-  if not ok then return HR_REPLY[why] or "busy" end
+  if not ok then return REASONS[why] or "busy" end
   if canon(p) ~= canon(pair()) then return "layer" end
   if not LA.Host.Invite(sender, NET.id) then return "busy" end
 end
@@ -496,26 +456,26 @@ local function onHR(text, sender)
   local zone, p, nonce = text:match("^HR:1:(%d+):(%d+%-%d+):(%d+)$")
   zone = tonumber(zone)
   if not zone or #p > PAIR_MAX then return end
-  local no = hostReply(sender, zone, p)
+  local no = hostAsk(sender, zone, p)
   if no then return send(VL, ("HA:1:%s:no:%s"):format(nonce, no), sender, true, H_TTL) end
   send(VL, ("HA:1:%s:ok"):format(nonce), sender, true, H_TTL)
   send(VL, ("HP:1:%s:%s"):format(nonce, pair()), sender, true, H_TTL)
 end
 
-local function onHA(text, sender, k)
+local function onHA(text, sender, key)
   local nonce, rest = text:match("^HA:1:(%d+):(.+)$")
-  local a = asking
-  if not nonce or not a or a.nonces[nonce] ~= k then return end
-  local try = a.cur and a.cur.nonce == nonce and a.cur or nil
+  local st = cur
+  if not nonce or not st or st.nonces[nonce] ~= key then return end
+  local try = st.try and st.try.nonce == nonce and st.try or nil
   if rest == "ok" then
-    a.ask.Offer(sender, NET.id)
+    st.ask.Offer(sender, NET.id)
     book:Remember(sender)
     if try then try.ok = true end
   elseif rest:sub(1, 2) == "no" then
-    a.ask.Refuse(sender)
-    census[k] = nil
+    st.ask.Refuse(sender)
+    census[key] = nil
     if try then
-      a.cur = nil
+      st.try = nil
       tryNext()
     end
   end
@@ -523,48 +483,38 @@ end
 
 local HANDLERS = { Q = onQ, A = onA, HR = onHR, HA = onHA }
 
-local function onSlotVote(text, k)
+local function onSlotVote(text, key)
   local slot, hour = text:match("^M:(%d+):(%d+)$")
   slot, hour = tonumber(slot), tonumber(hour)
   if not slot or not chan or hour ~= chan.hour or slot <= chan.slot or slot > SLOTS then return end
-  if not roster.keys[k] then return end
+  if not roster.keys[key] then return end
   local v = votes[slot]
   if not v or v.hour ~= hour then
     v = { hour = hour, n = 0, by = {} }
     votes[slot] = v
   end
-  if v.by[k] then return end
-  v.by[k], v.n = true, v.n + 1
+  if v.by[key] then return end
+  v.by[key], v.n = true, v.n + 1
   if v.n >= VOTES_NEEDED then moveToSlot(hour, slot, "votes") end
 end
 
-local function onGuard(text, sender, k)
-  if not text:find("^O:%d+$") then return onSlotVote(text, k) end
-  if LA.Gate("voidnet ping", k, PING_GAP) then send(VN, "o", sender, true) end
+local function onGuard(text, sender, key)
+  if not text:find("^O:%d+$") then return onSlotVote(text, key) end
+  if LA.Gate("voidnet ping", key, PING_GAP) then send(VN, "o", sender, true) end
 end
 
-local function overLimit(k, t)
-  local r = inbound[k] or {}
-  inbound[k] = r
+local function overLimit(key, t)
+  local r = inbound[key] or {}
+  inbound[key] = r
   if not r.t or t - r.t > IN_WINDOW then r.t, r.n = t, 0 end
   r.n = r.n + 1
   return r.n > IN_MAX
 end
 
-local function noteHeard(k, sender, t)
-  local h = heard[k] or {}
-  heard[k] = h
+local function noteHeard(key, sender, t)
+  local h = heard[key] or {}
+  heard[key] = h
   h.name, h.t = sender, t
-end
-
-function NET.OnAddon(_, prefix, text, chatType, sender, k)
-  if chatType ~= "WHISPER" or type(text) ~= "string" or #text > TEXT_MAX then return end
-  local t = now()
-  noteHeard(k, sender, t)
-  if prefix == VN then return onGuard(text, sender, k) end
-  if overLimit(k, t) then return end
-  local handler = HANDLERS[text:match("^(%u%u?):1:")]
-  if handler then handler(text, sender, k) end
 end
 
 function NET.Init(net)
@@ -575,16 +525,61 @@ function NET.Init(net)
   LA.On("GROUP_LEFT", onGroupLeft)
 end
 
+function NET.OnChannels()
+  started = true
+  join()
+  scheduleHour()
+end
+
 function NET.Seen()
   local n = #roster.names
   if roster.keys[LA.MyKey()] then n = n - 1 end
   return n
 end
 
-function NET.OnChannels()
-  started = true
-  join()
-  scheduleHour()
+function NET.OnAddon(_, prefix, text, chatType, sender, key)
+  if chatType ~= "WHISPER" or not text or #text > TEXT_MAX then return end
+  local t = GetTime()
+  noteHeard(key, sender, t)
+  if prefix == VN then return onGuard(text, sender, key) end
+  if overLimit(key, t) then return end
+  local handler = HANDLERS[text:match("^(%u%u?):1:")]
+  if handler then handler(text, sender, key) end
+end
+
+function NET.Ask(_, ask)
+  local zone = ask.zone
+  if not zone then return end
+  local st = {
+    ask = ask, zone = zone, nonce = newNonce(), waves = 0,
+    queue = {}, queued = {}, tried = {}, nonces = {}, asked = {},
+  }
+  cur = st
+  local t = GetTime()
+  for key, c in pairs(census) do
+    if c.zone == zone and t - c.t <= CENSUS_HOST then enqueue(st, key) end
+  end
+  tryNext()
+  wave(st, true)
+  if t - roster.at > ROSTER_FRESH then readRoster(function() wave(st) end) end
+  LA.After(WAVE_GAP, wave, st)
+end
+
+function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur = nil end end
+
+function NET.OnSwapResult(_, _, result, host)
+  local key = LA.NameKey(host)
+  if key and (result == "moved" or result == "same") then census[key] = nil end
+end
+
+function NET.OnHostFailed(_, ask, why, host)
+  local key = LA.NameKey(host)
+  if key and why == "same" then census[key] = nil end
+  local st = cur
+  if st and st.ask == ask and st.try and st.try.key == key then
+    st.try = nil
+    tryNext()
+  end
 end
 
 LA.RegisterNetwork(NET)

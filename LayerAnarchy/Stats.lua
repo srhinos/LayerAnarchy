@@ -53,7 +53,7 @@ local function dropOldest(set)
 end
 
 local function see(group, netId, key)
-  if not (netId and key) or key == LA.MyKey() then return end
+  if key == LA.MyKey() then return end
   local set = group[netId] or {}
   group[netId] = set
   local t = time()
