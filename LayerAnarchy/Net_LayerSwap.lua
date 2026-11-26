@@ -16,24 +16,28 @@ for word in ("wts wtb wtt lfm lfg guild raid enchant enchanting recruiting selli
   BLOCKED_WORDS[word] = true
 end
 local LAYER_WORDS = { layer = true, layers = true }
+local WHO_LISTS = { "LFGWhoListFrame", "FriendsFrame" }
 
-local who = { round = 0 }
+local who = { round = 0, muted = {} }
 local classes
 local onWhoList
 
-local function closePanel()
-  if LFGParentFrame:IsShown() and not InCombatLockdown() then pcall(HideUIPanel, LFGParentFrame) end
+local function muteWhoLists()
+  for _, name in ipairs(WHO_LISTS) do
+    local frame = _G[name]
+    if frame and not who.muted[frame] and frame:IsEventRegistered("WHO_LIST_UPDATE") and not frame:IsVisible() then
+      if not pcall(frame.UnregisterEvent, frame, "WHO_LIST_UPDATE") then return false end
+      who.muted[frame] = true
+    end
+  end
+  return true
 end
 
-local function onPanelShow()
-  who.shownAt = GetTime()
-  if who.answeredAt == who.shownAt then C_Timer.After(0, closePanel) end
-end
-
-local function watchPanel()
-  if who.watching or not LFGParentFrame then return end
-  who.watching = true
-  LFGParentFrame:HookScript("OnShow", onPanelShow)
+local function unmuteWhoLists()
+  for frame in pairs(who.muted) do
+    pcall(frame.RegisterEvent, frame, "WHO_LIST_UPDATE")
+    who.muted[frame] = nil
+  end
 end
 
 local function classIDs()
@@ -58,6 +62,7 @@ local function closeWho(p)
   who.pending = nil
   LA.Off("WHO_LIST_UPDATE", onWhoList)
   C_FriendList.SetWhoToUi(p.panelWasOpen)
+  unmuteWhoLists()
 end
 
 local function answer(p, names, why)
@@ -103,10 +108,6 @@ end
 onWhoList = function()
   local p = who.pending
   if not p then return end
-  if not p.panelWasOpen then
-    who.answeredAt = GetTime()
-    if who.shownAt == who.answeredAt then C_Timer.After(0, closePanel) end
-  end
   if p.late then return closeWho(p) end
   local num, total = C_FriendList.GetNumWhoResults()
   num = tonumber(LA.Safe(num)) or 0
@@ -119,7 +120,6 @@ local function replyLater(callback, names, why) LA.After(0, callback, names, why
 function LA.Who(zone, callback)
   zone = tonumber(zone)
   if not zone then return replyLater(callback, nil, "error") end
-  if InCombatLockdown() then return replyLater(callback, nil, "combat") end
   local last = who.last
   if last and last.zone == zone and GetTime() - last.at < WHO_REUSE then return replyLater(callback, last.names) end
   local p = who.pending
@@ -137,7 +137,10 @@ function LA.Who(zone, callback)
   if type(zoneName) ~= "string" or zoneName == "" then return replyLater(callback, nil, "nozone") end
   local query = WHO_TAG_ZONE .. '"' .. zoneName .. '"'
   if who.roundZone ~= zone then who.round, who.roundZone = 0, zone end
-  watchPanel()
+  if not muteWhoLists() and InCombatLockdown() then
+    unmuteWhoLists()
+    return replyLater(callback, nil, "combat")
+  end
   -- IsVisible: the Who list keeps its shown flag after its panel closes
   p = { zone = zone, zoneName = zoneName, callbacks = { callback },
     panelWasOpen = LFGParentFrame ~= nil and LFGParentFrame:IsVisible() }

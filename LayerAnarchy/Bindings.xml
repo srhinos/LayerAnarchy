@@ -5,4 +5,7 @@
 	<Binding name="LAYERANARCHY_TOGGLE" category="BINDING_HEADER_LAYERANARCHY">
 		LayerAnarchy_Toggle()
 	</Binding>
+	<Binding name="LAYERANARCHY_FOCUS" category="BINDING_HEADER_LAYERANARCHY">
+		LayerAnarchy_Focus()
+	</Binding>
 </Bindings>

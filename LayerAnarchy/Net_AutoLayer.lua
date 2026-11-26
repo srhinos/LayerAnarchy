@@ -189,10 +189,20 @@ local function onChannel(_, text, sender, _, _, _, _, _, _, base)
   hostAsk(text, sender, true)
 end
 
+local GUILD_ASKS = { "^%A*layers?%f[%A]", "^%A*inv%s+layers?%f[%A]" }
+
+local function leadsWithLayer(text)
+  local low = lower(text)
+  for _, pattern in ipairs(GUILD_ASKS) do
+    if match(low, pattern) then return true end
+  end
+  return false
+end
+
 local function onGuild(_, text, sender)
   text, sender = LA.Safe(text), LA.Safe(sender)
   if type(text) ~= "string" or type(sender) ~= "string" or sender == "" then return end
-  if find(text, "[Ll][Aa][Yy][Ee][Rr]") then hostAsk(text, sender, false) end
+  if leadsWithLayer(text) then hostAsk(text, sender, false) end
 end
 
 local function requestLine()

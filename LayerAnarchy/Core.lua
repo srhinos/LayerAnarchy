@@ -10,7 +10,7 @@ local UNDEFAULTED = { point = true }
 local OTHERS = {
   "LayerSwap", "BuloLayerForever", "ForeverLayers", "AutoLayer", "LayerHopForAutoLayer",
   "ForeverLayerHop", "VoidLayer", "VoidSweep", "VoidQuest", "VoidGather", "VoidBounty", "VoidDungeon",
-  "PartyLens", "ChangeLayer", "LayerHop", "MerrinxUI_LayerHop", "Meshly", "MyLayerTracker",
+  "ChangeLayer", "LayerHop", "MerrinxUI_LayerHop", "Meshly", "MyLayerTracker",
 }
 local API_CHECKS = {
   "JoinTemporaryChannel", "JoinChannelByName", "JoinPermanentChannel", "GetSelectedDisplayChannel",
@@ -982,10 +982,13 @@ end)
 BINDING_HEADER_LAYERANARCHY = "Layer Anarchy"
 BINDING_NAME_LAYERANARCHY_SWAP = "Swap layer"
 BINDING_NAME_LAYERANARCHY_TOGGLE = "Show or hide"
+BINDING_NAME_LAYERANARCHY_FOCUS = "Controller focus"
 
 function LayerAnarchy_Swap() LA.SwapClick() end
 
 function LayerAnarchy_Toggle() LA.SetSetting("hidden", not LA.Setting("hidden")) end
+
+function LayerAnarchy_Focus() LA.UI.Focus() end
 
 local function missingApis()
   local missing = {}
@@ -1051,7 +1054,7 @@ end
 local function setHelp(on) return function() LA.SetSetting("help", on) end end
 
 local COMMANDS = {
-  swap = LayerAnarchy_Swap,
+  swap = LayerAnarchy_Swap, focus = LayerAnarchy_Focus,
   ["host on"] = setHelp(true), ["host off"] = setHelp(false),
   ["help on"] = setHelp(true), ["help off"] = setHelp(false),
   diag = printDiag, ["diag perf"] = printPerf,

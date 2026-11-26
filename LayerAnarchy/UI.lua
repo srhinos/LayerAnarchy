@@ -19,7 +19,8 @@ local CORNER_X, CORNER_Y = PAD - GLYPH_INSET, -7
 local NOTE_TOP, NOTE_TEXT_TOP, NOTE_TEXT_H, NOTE_GAP = 8, 7, 14, 5
 local OPT_H, PILL_W, PILL_H, HEAD_H, DRAWER_LEVEL = 22, 40, 18, 22, 5
 local DRAWER_INSET, HEAD_TOP, LIST_TOP, DRAWER_BOTTOM, ROW_INSET = 6, 4, 6, 6, 4
-local SLIDER_W, SLIDER_H, SLIDER_GAP, READOUT_W, TRACK_H, THUMB_W, THUMB_H = 70, 14, 6, 46, 3, 4, 10
+local SLIDER_W, SLIDER_H, SLIDER_GAP, READOUT_W, TRACK_H, THUMB_W, THUMB_H = 56, 14, 4, 40, 3, 4, 10
+local STEP_W, STEP_GLYPH, PAD_ICON, PAD_BADGE = 14, 9, 14, 12
 local STAT_H, SECTION_H, SECTION_BASE, COL_W, GRID_COLUMNS, RECHECK = 15, 18, 2, 42, 4, 15
 local SEG_H, SEG_GAP, SEG_INSET = 16, 4, 1
 local BARS_W, BARS_GAP, BARS_H = 3, 2, { 5, 9, 13 }
@@ -28,7 +29,7 @@ local HUD_TEXT_X = HUD_GLYPH_X + HUD_GLYPH + HUD_TEXT_GAP
 local HUD_TEXT_TOP, HUD_LINE_GAP, HUD_WIDTH_STEP = 7, 3, 8
 local COG_SIZE, MINI_SIZE, CLOSE_SIZE = 13, 12, 13
 local SIZE = { line1 = 16, line2 = 13, button = 11, title = 11, option = 10, note = 12, hud = 12, stat = 11, caption = 9, seg = 10 }
-local CROSS = { 45, -45 }
+local CROSS, PLUS = { 45, -45 }, { 0, 90 }
 local MAX_INVITES, SCALE_MIN, SCALE_MAX, SCALE_STEP = 100, 0.7, 1.5, 0.05
 local REFERENCE_HEIGHT, BG_SUBLEVEL = 768, -8
 
@@ -60,12 +61,12 @@ local COLUMNS = { "Seen", "Talking", "Hosts" }
 local WINDOWS = { { "1h", "hour", 22 }, { "Session", "session", 44 } }
 local NONE = "–"
 
-local box, hud, note
+local root, box, hud, note, driver
 local sliders, skinned, hairs, rows = {}, {}, {}, {}
 local netRows, gridRows, segs = {}, {}, {}
 local drawers, toggles, revealed, dimmed = {}, {}, {}, {}
-local placed = {}
-local open
+local placed, pad = {}, { listed = false, focused = false }
+local open, current
 
 local function Text(parent, font, size, c)
   local fs = parent:CreateFontString(nil, "OVERLAY")
@@ -75,11 +76,13 @@ local function Text(parent, font, size, c)
   fs:SetJustifyH("LEFT")
   fs:SetWordWrap(false)
   fs:SetTextColor(c[1], c[2], c[3], c[4])
-  fs.tint = c
+  fs.tint, fs.prefix = c, false
   return fs
 end
 
 local function Set(fs, s)
+  fs.text = s
+  if fs.prefix then s = fs.prefix .. s end
   if fs.cur == s then return false end
   fs.cur = s
   fs:SetText(s)
@@ -171,6 +174,11 @@ local function Bars(parent)
   return g
 end
 
+local function Selectable(b, mark)
+  b.mark, b.OnSmartNavSelect, b.OnSmartNavDeselect = mark, pad.Pick, pad.Unpick
+  return b
+end
+
 local function Button(parent, w, h)
   local b = CreateFrame("Button", nil, parent)
   b:SetSize(w, h)
@@ -180,7 +188,7 @@ local function Button(parent, w, h)
   b.label:SetJustifyH("CENTER")
   b.label:SetPoint("LEFT", BUTTON_INSET, 0)
   b.label:SetPoint("RIGHT", -BUTTON_INSET, 0)
-  return b
+  return Selectable(b, pad.Label)
 end
 
 local function LayoutDrawer(d, below)
@@ -197,8 +205,16 @@ local function LayoutDrawer(d, below)
 end
 
 local function PlaceDrawer(d)
-  local p = Pixel(box)
-  local below = ((box:GetBottom() or 0) - d:GetHeight()) > 0
+  local _, bottom, _, h = box:GetScaledRect()
+  local above = select(4, UIParent:GetScaledRect()) - bottom - h
+  local need = d:GetHeight() * box:GetEffectiveScale()
+  local below = bottom >= need or (above < need and bottom >= above)
+  local fit = math.min(1, (below and bottom or above) / need)
+  if d:GetScale() ~= fit then
+    d:SetScale(fit)
+    Thin()
+  end
+  local p = Pixel(d)
   d:ClearAllPoints()
   if below then
     d:SetPoint("TOPLEFT", box, "BOTTOMLEFT", 0, p)
@@ -257,18 +273,20 @@ local function Draggable(f)
 end
 
 local function PaintToggles()
-  for _, b in ipairs(toggles) do Paint(b.glyph, (b.held() or b:IsMouseOver()) and C.gold or C.grey) end
+  for _, b in pairs(toggles) do Paint(b.glyph, (b.held() or b:IsMouseOver() or pad.picked == b) and C.gold or C.grey) end
 end
 
 local function ApplyHover()
-  local hot = box:IsMouseOver() or open ~= nil
+  local hot = box:IsMouseOver() or open ~= nil or pad.focused
   for _, f in ipairs(revealed) do f:SetShown(hot) end
   for _, f in ipairs(dimmed) do f:SetAlpha(hot and 1 or REST_ALPHA) end
 end
 
+local function Later() driver:Show() end
+
 local function WatchHover(f)
   f:HookScript("OnEnter", ApplyHover)
-  f:HookScript("OnLeave", function() C_Timer.After(0, ApplyHover) end)
+  f:HookScript("OnLeave", Later)
 end
 
 local function CloseDrawer() if open then open:Hide() end end
@@ -280,7 +298,7 @@ local function OpenDrawer(d)
   PlaceDrawer(d)
   d:Show()
   PaintToggles()
-  ApplyHover()
+  pad.Select(d.first)
 end
 
 local function ToggleDrawer(d) if open == d then CloseDrawer() else OpenDrawer(d) end end
@@ -290,7 +308,7 @@ local function DrawerHidden(d)
   if open ~= d then return end
   open = nil
   PaintToggles()
-  ApplyHover()
+  Later()
 end
 
 local function SyncOptions()
@@ -327,13 +345,13 @@ local function Bare(parent, onClick, draw)
   b:SetScript("OnEnter", function(self) Paint(self.glyph, C.gold) end)
   b:SetScript("OnLeave", function(self) Paint(self.glyph, (self.held and self.held()) and C.gold or C.grey) end)
   b:SetScript("OnClick", onClick)
-  return b
+  return Selectable(b, pad.Badge)
 end
 
 local function DrawerButton(key, draw)
   local b = Bare(box, function() ToggleDrawer(drawers[key]) end, draw)
   b.held = function() return open ~= nil and open == drawers[key] end
-  toggles[#toggles + 1] = b
+  toggles[key] = b
   return b
 end
 
@@ -349,12 +367,13 @@ local function Label(r, text)
   local fs = Text(r, FONT, SIZE.option, C.text)
   fs:SetPoint("LEFT", ROW_INSET, 0)
   Set(fs, text)
+  return fs
 end
 
 local function OptionRow(list, i, text, key)
-  local r = Row(list, (i - 1) * OPT_H, OPT_H, "Button")
+  local r = Selectable(Row(list, (i - 1) * OPT_H, OPT_H, "Button"), pad.Label)
   Solid(r, "HIGHLIGHT", C.hover):SetAllPoints()
-  Label(r, text)
+  r.label = Label(r, text)
   local pill = CreateFrame("Frame", nil, r)
   pill:SetSize(PILL_W, PILL_H)
   pill:SetPoint("RIGHT", -ROW_INSET, 0)
@@ -366,8 +385,29 @@ local function OptionRow(list, i, text, key)
   rows[i] = r
 end
 
+local function Commit(sl, v)
+  local lo, hi = sl:GetMinMaxValues()
+  v = math.min(hi, math.max(lo, math.floor(v / sl.step + 0.5) * sl.step))
+  if v ~= LA.Setting(sl.key) then LA.SetSetting(sl.key, v) end
+end
+
+local function Step(sl, dir) Commit(sl, sl:GetValue() + dir * sl.step) end
+
+local function Stepper(sl, dir, angles)
+  local b = CreateFrame("Button", nil, sl)
+  b:SetSize(STEP_W, STEP_W)
+  Skin(b, C.btn, C.btnEdge)
+  Solid(b, "HIGHLIGHT", C.hover):SetAllPoints()
+  Glyph(b, STEP_GLYPH, ICON.minus, C.text, angles):SetPoint("CENTER")
+  b:SetScript("OnClick", function() Step(sl, dir) end)
+  return b
+end
+
 local function SliderRow(list, i, label, key, lo, hi, step, fmt, tip)
-  local r = Row(list, (i - 1) * OPT_H, OPT_H)
+  local r = Selectable(Row(list, (i - 1) * OPT_H, OPT_H), pad.Tint)
+  r.tint = Solid(r, "BACKGROUND", C.hover)
+  r.tint:SetAllPoints()
+  r.tint:Hide()
   Label(r, label)
   local readout = Text(r, FONT, SIZE.option, C.value)
   readout:SetJustifyH("RIGHT")
@@ -376,7 +416,9 @@ local function SliderRow(list, i, label, key, lo, hi, step, fmt, tip)
   local sl = CreateFrame("Slider", nil, r)
   sl:SetOrientation("HORIZONTAL")
   sl:SetSize(SLIDER_W, SLIDER_H)
-  sl:SetPoint("RIGHT", readout, "LEFT", -SLIDER_GAP, 0)
+  sl:SetPoint("RIGHT", readout, "LEFT", -(2 * SLIDER_GAP + STEP_W), 0)
+  Stepper(sl, -1):SetPoint("RIGHT", sl, "LEFT", -SLIDER_GAP, 0)
+  Stepper(sl, 1, PLUS):SetPoint("LEFT", sl, "RIGHT", SLIDER_GAP, 0)
   sl:EnableMouse(true)
   sl:SetMinMaxValues(lo, hi)
   sl:SetValueStep(step)
@@ -393,13 +435,12 @@ local function SliderRow(list, i, label, key, lo, hi, step, fmt, tip)
   fill:SetHeight(TRACK_H)
   fill:SetPoint("LEFT", track, "LEFT")
   fill:SetPoint("RIGHT", thumb, "CENTER")
-  sl.key, sl.fmt, sl.readout = key, fmt, readout
+  sl.key, sl.step, sl.fmt, sl.readout, sl.row = key, step, fmt, readout, r
   sl:SetScript("OnValueChanged", function(self, v) Set(self.readout, self.fmt(v)) end)
   sl:SetScript("OnMouseDown", function(self) self.held = true end)
   sl:SetScript("OnMouseUp", function(self)
     self.held = nil
-    local v = math.floor(self:GetValue() / step + 0.5) * step
-    if v ~= LA.Setting(key) then LA.SetSetting(key, v) end
+    Commit(self, self:GetValue())
   end)
   if tip then
     r:EnableMouse(true)
@@ -434,6 +475,7 @@ local function Drawer(key, name, title)
   d.close = Bare(d.head, CloseDrawer, Icon(CLOSE_SIZE, ICON.minus, CROSS))
   d.close:SetPoint("RIGHT", 0, 0)
   d.body = CreateFrame("Frame", nil, d)
+  d.back = toggles[key]
   drawers[key] = d
   return d
 end
@@ -451,7 +493,7 @@ local function BuildOptions()
     "As host. Players report silences for invite spam; threshold unknown.")
   SliderRow(list, #OPTIONS + 2, "Scale", "scale", SCALE_MIN, SCALE_MAX, SCALE_STEP, scaleText)
   Fit(d, (#OPTIONS + 2) * OPT_H)
-  d.sync = SyncOptions
+  d.sync, d.first = SyncOptions, rows[1]
 end
 
 local function Seconds(sec) return string.format("%.1fs", sec) end
@@ -505,7 +547,7 @@ local function Segment(head, right)
   Skin(seg, C.bg, BORDER.neutral)
   local x = SEG_INSET
   for i, w in ipairs(WINDOWS) do
-    local b = CreateFrame("Button", nil, seg)
+    local b = Selectable(CreateFrame("Button", nil, seg), pad.Badge)
     b:SetSize(w[3], SEG_H - 2 * SEG_INSET)
     b:SetPoint("LEFT", x, 0)
     b.picked = Solid(b, "BACKGROUND", C.btn)
@@ -615,7 +657,7 @@ local function BuildNetwork()
   local y = BuildTable(d.body)
   y = Section(d.body, y, "YOUR SWAPS", SWAPS)
   Fit(d, Section(d.body, y, "HOSTING", HOSTING))
-  d.sync = SyncNetwork
+  d.sync, d.first = SyncNetwork, segs[1]
   d:SetScript("OnShow", function() LA.Stats.Watch(true) end)
   d:HookScript("OnHide", function() LA.Stats.Watch(false) end)
 end
@@ -626,6 +668,7 @@ local function BuildNote()
   note:SetPoint("RIGHT", box, "RIGHT", -PAD, 0)
   note:SetHeight(1)
   note:Hide()
+  note.back = box.swap
   local div = Solid(note, "ARTWORK", C.btn)
   div:SetPoint("TOPLEFT"); div:SetPoint("TOPRIGHT")
   hairs[#hairs + 1] = div
@@ -642,7 +685,7 @@ local function BuildNote()
 end
 
 local function BuildBox()
-  box = CreateFrame("Frame", nil, UIParent)
+  box = CreateFrame("Frame", "LayerAnarchyBox", root)
   box:SetSize(W, BASE_H)
   Draggable(box)
   Skin(box, C.bg, BORDER.neutral)
@@ -679,7 +722,7 @@ local function BuildBox()
   swap:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -PAD, PAD)
   swap:SetScript("OnClick", function() LA.SwapClick() end)
 
-  box.help, box.swap = help, swap
+  box.help, box.swap, box.mini = help, swap, mini
   BuildNote()
   for _, f in ipairs({ box, mini, cog, bars, help, swap, note.button }) do WatchHover(f) end
   ApplyHover()
@@ -706,6 +749,7 @@ local function ShapeNotice(hasText, hasButton)
   note:SetHeight(h)
   note:SetShown(shown)
   box:SetHeight(BASE_H + (shown and h + NOTE_TOP or 0))
+  if open then PlaceDrawer(open) end
 end
 
 local function DrawNotice(n)
@@ -747,13 +791,14 @@ local function DrawBox(v)
 end
 
 local function BuildHud()
-  hud = CreateFrame("Frame", nil, UIParent)
+  hud = Selectable(CreateFrame("Button", nil, root), pad.Badge)
   hud:SetSize(HUD_MIN_W, HUD_H)
   Draggable(hud)
   hud:SetScript("OnMouseDown", function(self) self.moved = nil end)
-  hud:SetScript("OnMouseUp", function(self, button)
-    if button == "LeftButton" and not self.moved and self:IsMouseOver() then LA.SetSetting("minimized", false) end
+  hud:SetScript("OnClick", function(self)
+    if not self.moved then LA.SetSetting("minimized", false) end
   end)
+  box.back, hud.back = hud, box.mini
   Skin(hud, C.hudBg, BORDER.neutral)
   hud.glyph = Glyph(hud, HUD_GLYPH, ICON.layers, GLYPH.neutral)
   hud.glyph:SetPoint("LEFT", HUD_GLYPH_X, 0)
@@ -778,35 +823,186 @@ local function DrawHud(v)
   Paint(hud.glyph, GLYPH[key])
 end
 
-function UI.Refresh()
-  if not box then return end
-  if LA.Setting("scale") ~= placed.s or LA.Setting("point") ~= placed.pt then Place() end
-  if LA.Setting("hidden") then
-    box:Hide()
-    hud:Hide()
-    return
+function pad.Atlas() return InputIconTextureSetUtility.GetNormalActiveInputIconButtonTexture(GAMEPAD_FACE_BOTTOM) end
+
+function pad.Icon() return CreateAtlasMarkup(pad.Atlas(), PAD_ICON, PAD_ICON) end
+
+function pad.Label(b, on)
+  local fs = b.label
+  fs.prefix = on and pad.Icon() .. " "
+  Set(fs, fs.text or "")
+end
+
+function pad.Badge(b, on)
+  if not b.badge then
+    if not on then return end
+    b.badge = (b.glyph or b):CreateTexture(nil, "OVERLAY")
+    b.badge:SetSize(PAD_BADGE, PAD_BADGE)
+    b.badge:SetPoint("CENTER", b, "BOTTOMRIGHT")
   end
-  local v = LA.View()
-  if LA.Setting("minimized") then
-    box:Hide()
-    DrawHud(v)
-    hud:Show()
-  else
-    hud:Hide()
-    DrawBox(v)
-    box:Show()
-    if open then open.sync() end
+  if on then b.badge:SetAtlas(pad.Atlas()) end
+  b.badge:SetShown(on)
+end
+
+function pad.Tint(b, on) b.tint:SetShown(on) end
+
+function pad.Mark(b, on)
+  if on then pad.picked = b elseif pad.picked == b then pad.picked = nil end
+  b.mark(b, on)
+end
+
+function pad.Pick(b) LA.Try("pad", pad.Mark, b, true) end
+
+function pad.Unpick(b) LA.Try("pad", pad.Mark, b, false) end
+
+function pad.Restricted()
+  return InCombatLockdown() or C_RestrictedActions.IsAddOnRestrictionActive(Enum.AddOnRestrictionType.Combat)
+end
+
+function pad.Select(b)
+  pad.target = b
+  Later()
+end
+
+function pad.Leave()
+  pad.release = nil
+  if not pad.listed then return end
+  pad.listed = false
+  if InputUtil.IsGamepadUIEnabled() then
+    GamepadMode.FrameControlsManager:FrameHidden(root)
+    SmartNavigation:RemovePanelInfo(root)
+  end
+  pad.focused = false
+  if pad.picked then pad.Unpick(pad.picked) end
+  ApplyHover()
+end
+
+function pad.Prepare()
+  if pad.prepared then return end
+  pad.prepared = true
+  local function Stay(sl, dir)
+    return function()
+      LA.Try("pad", Step, sl, dir)
+      return true
+    end
+  end
+  for _, sl in ipairs(sliders) do
+    SmartNavigation_MarkFrameFocusable(sl.row)
+    SmartNavigation_MarkFrameIgnored(sl)
+    SmartNavigation_AddJumpNavigationOverride(sl.row, SMART_NAV_INPUT_DIRECTION.LEFT, Stay(sl, -1))
+    SmartNavigation_AddJumpNavigationOverride(sl.row, SMART_NAV_INPUT_DIRECTION.RIGHT, Stay(sl, 1))
   end
 end
 
+function pad.Fallback(f)
+  while f and not f.back do f = f:GetParent() end
+  return f and f.back
+end
+
+function pad.Sync()
+  local target = pad.target
+  pad.target = nil
+  if not pad.listed then return end
+  if pad.release or not (current and GamepadMode.FrameControlsManager.isUIFocused and InputUtil.IsGamepadUIEnabled()) then
+    return pad.Leave()
+  end
+  local picked = pad.picked
+  if picked and not picked:IsVisible() then target = target or pad.Fallback(picked) end
+  if target and target:IsVisible() then SmartNavigation:SetTargetButtonForFrame(root, target) end
+end
+
+function pad.Cursor()
+  if not ConsolePort then return end
+  local want = open ~= nil or note.button:IsVisible()
+  if want == pad.cursor then return end
+  -- starts unknown: ConsolePort saves its cursor frames, so the first pass clears one left by a reload
+  pad.cursor = want
+  if want then ConsolePort:AddInterfaceCursorFrame(box) else ConsolePort:RemoveInterfaceCursorFrame(box) end
+end
+
+function pad.Focused(on)
+  pad.focused = on
+  ApplyHover()
+  Later()
+end
+
+function pad.Close()
+  if open then return CloseDrawer() end
+  pad.release = true
+  Later()
+end
+
+function pad.OnRestriction(_, kind, state)
+  if kind == Enum.AddOnRestrictionType.Combat and state == Enum.AddOnRestrictionState.Activating then pad.Leave() end
+end
+
+function pad.Print()
+  local manager = GamepadMode.FrameControlsManager
+  LA.Print(string.format("pad: gamepad UI %s · listed %s · focused %s · UI focus %s · windows %d · combat %s · ConsolePort %s",
+    tostring(InputUtil.IsGamepadUIEnabled()), tostring(pad.listed), tostring(pad.focused), tostring(manager.isUIFocused),
+    manager:GetShownFrameCount(), tostring(pad.Restricted()), tostring(pad.cursor)))
+end
+
+local function BuildRoot()
+  root = CreateFrame("Frame", nil, UIParent)
+  root:SetAllPoints()
+  root.FocusGamepad = function() LA.Try("pad", pad.Focused, true) end
+  root.UnfocusGamepad = function() LA.Try("pad", pad.Focused, false) end
+  root.SmartNavigationCloseHandler = function()
+    LA.Try("pad", pad.Close)
+    return true
+  end
+  driver = CreateFrame("Frame")
+  driver:Hide()
+  driver:SetScript("OnUpdate", function(self)
+    self:Hide()
+    LA.Try("ui", ApplyHover)
+    LA.Try("pad", pad.Sync)
+    LA.Try("pad", pad.Cursor)
+  end)
+end
+
+function UI.Refresh()
+  if not box then return end
+  if LA.Setting("scale") ~= placed.s or LA.Setting("point") ~= placed.pt then Place() end
+  current = not LA.Setting("hidden") and (LA.Setting("minimized") and hud or box) or nil
+  if current then
+    local v = LA.View()
+    if current == hud then DrawHud(v) else DrawBox(v) end
+  end
+  box:SetShown(current == box)
+  hud:SetShown(current == hud)
+  if open then open.sync() end
+  Later()
+end
+
+-- listed only on request: a listed window takes the controller whenever another window closes
+function UI.Focus()
+  if pad.listed then return pad.Leave() end
+  if not current or pad.Restricted() or not InputUtil.IsGamepadUIEnabled() then return end
+  pad.Prepare()
+  pad.listed = true
+  -- as a popup it survives the game's HUD edit mode, which hides the other listed windows
+  GamepadMode.FrameControlsManager:FrameShown(root, true)
+  pad.Select(current == hud and hud or box.swap)
+end
+
+function UI.SendKey() return InputUtil.IsGamepadUIEnabled() and pad.Icon() or "Enter" end
+
 function UI.Init()
   if box then return end
+  BuildRoot()
   BuildBox()
   BuildHud()
   BuildOptions()
   BuildNetwork()
   LA.On("UI_SCALE_CHANGED", Place)
   LA.On("DISPLAY_SIZE_CHANGED", Place)
+  LA.On("PLAYER_REGEN_DISABLED", pad.Leave)
+  LA.On("ADDON_RESTRICTION_STATE_CHANGED", pad.OnRestriction)
+  LA.On("INPUT_DEVICE_INTERFACE_TRANSITION", LA.Refresh)
+  EventRegistry:RegisterCallback("Gamepad.RefreshFrameFocus", Later, pad)
+  LA.Command("diag pad", pad.Print)
   Place()
   UI.Refresh()
 end

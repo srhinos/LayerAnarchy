@@ -7,6 +7,7 @@ local ASK_WINDOW, RETRY_WINDOW, MORE_WINDOW, FALLBACK_AFTER = 25, 10, 20, 8
 local JOIN_WAIT, VERDICT_AFTER, LEAVE_AFTER, MOVED_BACK_WATCH, TRANSFER_SETTLE = 10, 3, 3, 6, 2
 local NOTE_FOR, LATE_FOR, SYSTEM_FRESH, BLOCKED_FLASH, STALE_SWAP = 6, 90, 3, 4, 120
 local HOUR = 3600
+local INVITE_SOUND_FILE = 567451
 local SHARDING = Enum.PhaseReason.Sharding
 
 local cur
@@ -22,6 +23,20 @@ local function setPhase(s, phase) s.phase, s.phaseAt = phase, now() end
 local function leave(s, why)
   s.leaving = true
   LA.LeaveGroup(why)
+end
+
+local function muteInvites(on)
+  on = on or nil
+  if on == LA.db.invitesMuted then return end
+  if pcall(on and MuteSoundFile or UnmuteSoundFile, INVITE_SOUND_FILE) then LA.db.invitesMuted = on end
+end
+
+local function releaseInvites()
+  if not cur and now() >= lateUntil then muteInvites(false) end
+end
+
+local function ring()
+  if LA.db.invitesMuted then pcall(PlaySound, SOUNDKIT.IG_PLAYER_INVITE) end
 end
 
 local function hidePopup(accepted)
@@ -68,6 +83,7 @@ local function finish(result, flashText, notice)
   if not s then return end
   s.active, cur = false, nil
   lastAsk, lateUntil = s, now() + LATE_FOR
+  LA.After(LATE_FOR, releaseInvites)
   LA.char.swapHost = nil
   LA.Each("StopAsk", s)
   LA.Each("OnSwapResult", s, result, s.host)
@@ -176,6 +192,7 @@ end
 function Swap.Start()
   local s = newAsk()
   cur = s
+  muteInvites(true)
   LA.ClearFlash()
   LA.Each("Ask", s)
   armDeadline(s)
@@ -232,7 +249,7 @@ local function askingStatus(s, v)
     return LA.WakeIn(s.noteUntil - now())
   end
   if s.fallback == "prefilled" then
-    v.status, v.tone, v.border = "Press Enter to send", "warn", "fail"
+    v.status, v.tone, v.border = "Press " .. LA.UI.SendKey() .. " to send", "warn", "fail"
     return
   end
   local sent, total, _, busy = tally(s)
@@ -319,6 +336,7 @@ local function take(s, name, key)
     setPhase(s, "joining")
   else
     setPhase(s, "invited")
+    ring()
   end
   LA.ClearPrefill()
   LA.After(JOIN_WAIT, checkJoin, s, s.phaseAt)
@@ -339,8 +357,12 @@ local function onInvite(_, name, _, _, _, _, isCrossShard, _, inviterGUID)
     end
     return take(s, name, key)
   end
-  if friend then return LA.Quiet(name, false) end
-  if (s and (s.asked[key] or s.offers[key])) or isLate(key) then decline(name, "late") end
+  if friend then
+    LA.Quiet(name, false)
+    return ring()
+  end
+  if (s and (s.asked[key] or s.offers[key])) or isLate(key) then return decline(name, "late") end
+  ring()
 end
 
 local function onJoined()
@@ -437,4 +459,5 @@ function Swap.Init()
   LA.On("GROUP_LEFT", onLeft)
   LA.On("CHAT_MSG_SYSTEM", onSystem)
   LA.On("PLAYER_ENTERING_WORLD", leaveStaleSwap)
+  releaseInvites()
 end
