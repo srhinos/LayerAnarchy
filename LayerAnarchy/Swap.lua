@@ -64,7 +64,7 @@ local function progressOf(s)
   local sent, total, more, busy = 0, 0, false, false
   for _, p in pairs(s.progress) do
     sent, total = sent + p.sent, total + p.total
-    if p.searching or p.sent < p.total then busy = true end
+    if p.sent < p.total then busy = true end
     if p.more then more = true end
   end
   return sent, total, more and not busy, busy
@@ -175,11 +175,11 @@ local function newAsk()
     local key = LA.NameKey(name)
     if key then refuse(s, key) end
   end
-  function s.Progress(netId, sent, total, more, searching)
+  function s.Progress(netId, sent, total, more)
     local p = s.progress[netId] or {}
     s.progress[netId] = p
-    if searching or sent > (p.sent or 0) then extend(s, RETRY_WINDOW) end
-    p.sent, p.total, p.more, p.searching = sent, total, more and true or false, searching and true or false
+    if sent > (p.sent or 0) then extend(s, RETRY_WINDOW) end
+    p.sent, p.total, p.more = sent, total, more and true or false
     LA.Refresh()
   end
   function s.AllowAny(seconds)
