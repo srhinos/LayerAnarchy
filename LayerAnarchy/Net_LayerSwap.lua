@@ -3,7 +3,7 @@ local _, LA = ...
 local NET = { id = "layerswap", name = "LayerSwap", prefixes = { "LayerSwap" } }
 local PREFIX = NET.prefixes[1]
 local RULES_TAG = "r3"
-local BURST, ROUND_GAP, MAX_ASK = 8, 1, 49
+local BURST, BURST_GAP, MAX_ASK, REPLY_WINDOW, HOST_RECENT = 8, 1, 49, 4, 3600
 local HEARD_GAP, LAYER_ID_MAX, EPOCH_MOD = 10, 24, 100
 local WHO_WAIT, WHO_LATE_FOR, WHO_REUSE, WHO_MAX, WHO_GAP = 5, 30, 10, 50, 2.5
 local THROTTLED = Enum.SendAddonMessageResult.AddonMessageThrottle
@@ -77,8 +77,8 @@ local function whoTimeout(p)
 end
 
 local function advanceRound(num, total)
-  who.capped = total > num or num >= WHO_MAX
-  if total > num or who.round > 0 then who.round = (who.round + 1) % (#classIDs() + 1) end
+  local full = total > num or num >= WHO_MAX
+  if full or who.round > 0 then who.round = (who.round + 1) % (#classIDs() + 1) end
 end
 
 local function whoNames(num, zoneName)
@@ -188,10 +188,13 @@ local function hostsFirst(names)
   return first
 end
 
-local function bookHosts(zone)
+local function knownHosts(zone)
+  local now = time()
+  local hosts = book:List(function(e, key)
+    return e.host and e.zone == zone and now - e.at < HOST_RECENT and not LA.Offline(key)
+  end)
   local names = {}
-  local hosts = book:List(function(e) return e.host and e.zone == zone end)
-  for i = 1, math.min(#hosts, MAX_ASK) do names[i] = hosts[i].name end
+  for i, e in ipairs(hosts) do names[i] = e.name end
   return names
 end
 
@@ -213,38 +216,53 @@ local function live(st) return st ~= nil and cur == st and not st.stopped and st
 
 local function cooldownLeft() return who.sentAt and who.sentAt + WHO_GAP - GetTime() or 0 end
 
-local function progress(st)
-  local wait = cooldownLeft()
-  if st.more and wait > 0 then LA.After(wait, progress, st) end
-  st.ask.Progress(NET.id, st.i - 1, #st.queue, st.more and wait <= 0)
+local function batchFailed(st)
+  local b = st.batch
+  if not (st.more and b) or st.i <= b.to then return false end
+  for i = b.from, b.to do
+    if st.ask.Offered(st.queue[i]) then return false end
+  end
+  local wait = math.max(b.at + REPLY_WINDOW - GetTime(), cooldownLeft())
+  return wait <= 0, wait
 end
 
-local function round(st)
+local function progress(st)
+  if not live(st) then return end
+  local failed, wait = batchFailed(st)
+  if st.judge then st.judge:Cancel() end
+  st.judge = wait and wait > 0 and LA.After(wait, progress, st) or nil
+  st.ask.Progress(NET.id, #st.queue - st.i + 1, failed)
+end
+
+local function burst(st)
+  st.next = nil
   if not live(st) then return end
   if IsInGroup() then
     st.held = true
     return
   end
-  local sent = 0
+  local b, sent = st.batch, 0
   while sent < BURST and st.i <= #st.queue do
     local name = st.queue[st.i]
-    st.ask.Asked(name)
     if whisper(st.line, name) == THROTTLED then break end
+    st.ask.Asked(name)
+    if b and st.i <= b.to then b.at = GetTime() end
     st.i, sent = st.i + 1, sent + 1
   end
   progress(st)
-  if st.i <= #st.queue then LA.After(ROUND_GAP, round, st) end
+  if st.i <= #st.queue then st.next = LA.After(BURST_GAP, burst, st) end
+end
+
+local function pump(st)
+  if st.next or st.held then return progress(st) end
+  burst(st)
 end
 
 local function resume()
   local st = cur
   if not (st and st.held) then return end
   st.held = nil
-  round(st)
-end
-
-local function markSeen(st, names)
-  for _, name in ipairs(names) do st.seen[LA.NameKey(name)] = true end
+  burst(st)
 end
 
 local function enqueue(st, names)
@@ -260,20 +278,41 @@ local function enqueue(st, names)
   return added
 end
 
+local function newBatch(st, names)
+  local b = { from = #st.queue + 1, at = GetTime() }
+  enqueue(st, names)
+  b.to = #st.queue
+  st.batch = b
+  pump(st)
+end
+
+local function searched(st, names)
+  if not live(st) then return end
+  st.searching = false
+  st.more = names ~= nil and who.round ~= 0
+  newBatch(st, names and hostsFirst(names) or knownHosts(st.zone))
+end
+
 local function onHeard(sender, key, asker, layer, zone, flag)
   if not LA.IsMe(asker) then return end
   zone = tonumber(zone)
-  book:Remember(sender, { zone = zone, host = flag == "h" or flag == "s" })
+  local real = #layer <= LAYER_ID_MAX and layer:match("^%d+%-%d+$") ~= nil
+  book:Remember(sender, { zone = zone, host = real and (flag == "h" or flag == "s") })
   local st = cur
-  if not live(st) then return end
-  if layer:match("^%d+%-%d+$") and #layer <= LAYER_ID_MAX then st.replies[key] = { layer = layer, zone = zone } end
-  if flag == "h" then st.ask.Offer(sender, NET.id) end
+  if not (real and live(st)) then return end
+  st.replies[key] = { layer = layer, zone = zone }
+  if flag == "h" and layer ~= st.notId then
+    st.ask.Offer(sender, NET.id)
+    progress(st)
+  end
 end
 
 local function onSame(sender)
   book:Remember(sender, { host = true })
   local st = cur
-  if live(st) then st.ask.Refuse(sender) end
+  if not live(st) then return end
+  st.ask.Refuse(sender)
+  progress(st)
 end
 
 local function heard(asker, key, flag, force)
@@ -327,28 +366,30 @@ end
 function NET.Ask(_, ask)
   local zone = ask.zone
   if not zone then return end
-  local st = { ask = ask, zone = zone, notId = ourId(), queue = {}, seen = {}, i = 1, replies = {} }
+  local st = { ask = ask, zone = zone, notId = ourId(), queue = {}, seen = {}, i = 1, replies = {}, searching = true }
   st.line = request(zone, st.notId)
   cur = st
-  LA.Who(zone, function(names)
-    if not live(st) then return end
-    st.queue = hostsFirst(names or bookHosts(zone))
-    st.more = who.round ~= 0
-    markSeen(st, st.queue)
-    round(st)
-  end)
+  LA.Who(zone, function(names) searched(st, names) end)
 end
 
-function NET.More(_, ask)
+function NET.Round(_, ask)
+  local st = cur
+  if not (live(st) and st.ask == ask) then return false end
+  if enqueue(st, knownHosts(st.zone)) > 0 then pump(st) end
+  return st.searching or st.i <= #st.queue
+end
+
+function NET.Search(_, ask)
   local st = cur
   if not (live(st) and st.ask == ask and st.more) then return end
+  st.more, st.searching = false, true
+  progress(st)
   who.last = nil
-  LA.Who(st.zone, function(names, why)
-    if not live(st) or why == "cooldown" then return end
-    local added = names and enqueue(st, names) or 0
-    st.more = names ~= nil and who.round ~= 0
-    LA.Log("more", added, st.more and "more" or "done")
-    if added > 0 then round(st) else progress(st) end
+  LA.Who(st.zone, function(names)
+    if names then return searched(st, names) end
+    if not live(st) then return end
+    st.more, st.searching = true, false
+    progress(st)
   end)
 end
 
@@ -361,6 +402,11 @@ function NET.OnSwapResult(_, ask, result, hostName)
   if reply and reply.zone == st.zone and reply.layer ~= st.notId then
     adopted = { id = reply.layer, epoch = LA.LayerEpoch() }
   end
+end
+
+function NET.OnHostFailed(_, ask)
+  local st = cur
+  if live(st) and st.ask == ask then progress(st) end
 end
 
 LA.RegisterNetwork(NET)

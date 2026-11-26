@@ -800,7 +800,7 @@ function LA.ClearFlash() flash.untilAt = 0 end
 
 local function confirmRefresh() C_PlayerInteractionManager.ShardTransferConfirm() end
 
-local REFRESH_NOTICE = { text = "", tone = "warn", button = { text = "Refresh now", onClick = confirmRefresh } }
+local REFRESH_NOTICE = { text = "", tone = "warn", buttons = { { text = "Refresh now", onClick = confirmRefresh } } }
 
 local function clock(sec)
   sec = math.max(0, math.floor(sec + 0.5))

@@ -6,9 +6,12 @@ LA.Debug = Debug
 local STATE_EVERY = 2.5
 local LABEL, MOVED_LABEL = "Layer C", "Layer H"
 local HOST, GUEST = "Bram Holloway", "Ines Calder"
+local ASK, SEARCH = { text = "Ask AutoLayer" }, { text = "Search more" }
 local RESET_NOTICE = { text = "Reset in ~45m", tone = "warn" }
-local REFRESH_NOTICE = { text = "", tone = "warn", button = { text = "Refresh now" } }
-local ASK_NOTICE = { text = "", tone = "swap", button = { text = "Ask AutoLayer" } }
+local REFRESH_NOTICE = { text = "", tone = "warn", buttons = { { text = "Refresh now" } } }
+local ASK_NOTICE = { text = "", tone = "swap", buttons = { ASK } }
+local SEARCH_NOTICE = { text = "", tone = "swap", buttons = { SEARCH } }
+local BOTH_NOTICE = { text = "", tone = "swap", buttons = { ASK, SEARCH } }
 
 local function waiting(status, border, notice)
   return { status = status, tone = "warn", border = border, notice = notice }
@@ -16,6 +19,10 @@ end
 
 local function swapping(status, swapText, label)
   return { status = status, tone = "swap", border = "swap", swapText = swapText or "Stop", label = label }
+end
+
+local function offering(status, notice)
+  return { status = status, tone = "swap", border = "swap", swapText = "Stop", notice = notice }
 end
 
 local function failed(status, swapText, notice)
@@ -31,15 +38,16 @@ local STATES = {
   waiting("Paused (invite limit)"),
   swapping("Searching (0 found)"),
   swapping("Asking 6/14 – 0 found"),
-  { status = "Searching (0 found)", tone = "swap", border = "swap", swapText = "Stop", notice = ASK_NOTICE },
+  offering("Asking 49/49 – 0 found", SEARCH_NOTICE),
+  offering("Asking 22/22 – 1 found", ASK_NOTICE),
+  offering("Asking 71/71 – 0 found", BOTH_NOTICE),
   { status = "Press Enter to send", tone = "warn", border = "fail", swapText = "Stop" },
-  swapping("Searching (3 found)", "Ask more"),
   swapping("Invite from " .. HOST),
   swapping("Joining " .. HOST),
   swapping("In " .. HOST .. "'s group", "Leave"),
   swapping("Moved – leaving in 3s", "Leave", MOVED_LABEL),
   swapping("Moved", "Leave", MOVED_LABEL),
-  failed("No host found"),
+  failed("No hosts found"),
   failed("Same layer – retrying", "Stop"),
   failed("Not moved – retrying", "Stop"),
   failed("Other zone – retrying", "Stop"),

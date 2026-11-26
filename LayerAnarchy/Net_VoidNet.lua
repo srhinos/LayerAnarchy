@@ -9,7 +9,7 @@ local CODE_PRIME, SALT_PRIME, PW_PRIME, HASH_MUL = 7919, 97, 104729, 31
 local HORDE, ALLIANCE, NEUTRAL, HOUR = 1, 2, 3, 3600
 local JITTER_MIN, JITTER_MAX, JOIN_DEBOUNCE, REJOIN_AFTER, REJOIN_TRIES = 20, 40, 10, 10, 3
 local ROSTER_FRESH, ROSTER_MAX, ROSTER_WAIT, ROSTER_SETTLE = 300, 300, 8, 2
-local FANOUT, RELAY, WAVES, WAVE_GAP, KNOWN_FIRST, RELAY_QUEUE_MAX, RANDOM_TRIES = 10, 4, 3, 8, 3, 20, 3
+local FANOUT, RELAY, KNOWN_FIRST, RELAY_QUEUE_MAX, RANDOM_TRIES = 10, 4, 3, 20, 3
 local HR_WAIT, OK_WAIT, A_WINDOW, ANSWER_GAP, Q_GAP = 12, 30, 60, 60, 60
 local CENSUS_HOST, CENSUS_KEEP, HEARD_KEEP, REACH, PING_GAP = 300, 600, 7200, 3600, 10
 local IN_MAX, IN_WINDOW, QUEUE_MAX, BURST, REFILL = 20, 60, 60, 8, 1.1
@@ -126,6 +126,11 @@ local function send(prefix, text, to, urgent, life)
   pump()
 end
 
+local function sendRoom(life)
+  local ready = math.min(BURST, tokens + (GetTime() - filled) / REFILL)
+  return math.floor(ready + life / REFILL) - #queue
+end
+
 local function reachable(key, t)
   if LA.Offline(key) then return false end
   local h = heard[key]
@@ -175,7 +180,7 @@ local function pickRandom(n, exclude)
     if #out >= n then break end
     local i = math.random(1, #list)
     local key = roster.keyList[i]
-    if key ~= me and not used[key] and not exclude[key] then
+    if key ~= me and not used[key] and not exclude[key] and not LA.Offline(key) then
       used[key] = true
       out[#out + 1] = list[i]
     end
@@ -351,7 +356,7 @@ end
 
 local function freshHost(st, key, t)
   local c = census[key]
-  return not st.tried[key] and c ~= nil and c.zone == st.zone and t - c.t <= CENSUS_HOST
+  return not st.tried[key] and c ~= nil and c.zone == st.zone and t - c.t <= CENSUS_HOST and not LA.Offline(key)
 end
 
 local function tryNext()
@@ -393,14 +398,15 @@ local function onGroupLeft()
   if st.try then check(st, st.try) else tryNext() end
 end
 
-local function wave(st, first)
-  if not live(st) or st.waves >= WAVES then return end
-  if not first and st.ask.found > 0 then return end
+local function wave(st)
+  if not live(st) then return false end
   local me = LA.Me()
-  if not validName(me) then return end
-  local targets = pick(FANOUT, st.asked)
-  if #targets == 0 then return st.ask.Progress(NET.id, st.sent, st.sent, false) end
-  st.waves, st.lastQ = st.waves + 1, GetTime()
+  if not validName(me) then return false end
+  local room = math.min(FANOUT, sendRoom(Q_TTL))
+  if room < 1 then return true end
+  local targets = pick(room, st.asked)
+  if #targets == 0 then return false end
+  st.lastQ = GetTime()
   local text = ("Q:1:1:%d:%s:%s"):format(st.zone, st.nonce, me)
   for _, name in ipairs(targets) do
     local key = LA.NameKey(name)
@@ -411,9 +417,8 @@ local function wave(st, first)
       send(VL, text, name, false, Q_TTL)
     end
   end
-  st.sent = st.sent + #targets
-  LA.Log("vn-wave", st.waves, #targets)
-  st.ask.Progress(NET.id, st.sent, st.sent, st.waves < WAVES and #targets == FANOUT)
+  LA.Log("vn-wave", #targets)
+  return true
 end
 
 local function relay(zone, nonce, asker, exclude)
@@ -555,7 +560,7 @@ function NET.Ask(_, ask)
   local zone = ask.zone
   if not zone then return end
   local st = {
-    ask = ask, zone = zone, nonce = newNonce(), waves = 0, sent = 0,
+    ask = ask, zone = zone, nonce = newNonce(),
     queue = {}, queued = {}, tried = {}, nonces = {}, asked = {},
   }
   cur = st
@@ -564,12 +569,15 @@ function NET.Ask(_, ask)
     if c.zone == zone and t - c.t <= CENSUS_HOST then enqueue(st, key) end
   end
   tryNext()
-  wave(st, true)
-  if t - roster.at > ROSTER_FRESH then readRoster(function() wave(st) end) end
-  LA.After(WAVE_GAP, wave, st)
+  wave(st)
+  if t - roster.at > ROSTER_FRESH then readRoster(function(ok) if ok then wave(st) end end) end
 end
 
-function NET.More(_, ask) if cur and cur.ask == ask then wave(cur, true) end end
+function NET.Round(_, ask)
+  local st = cur
+  if not (st and st.ask == ask) then return false end
+  return wave(st) or reading ~= nil
+end
 
 function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur = nil end end
 

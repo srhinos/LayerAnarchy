@@ -3,7 +3,7 @@ local _, LA = ...
 local Swap = {}
 LA.Swap = Swap
 
-local ASK_WINDOW, RETRY_WINDOW, FALLBACK_AFTER = 25, 10, 8
+local ROUND_EVERY, AUTOLAYER_AFTER, END_AFTER, SAFETY_CAP = 6, 12, 15, 120
 local JOIN_WAIT, VERDICT_AFTER, LEAVE_AFTER, MOVED_BACK_WATCH, SETTLE_MARGIN = 10, 3, 3, 6, 3
 local NOTE_FOR, LATE_FOR, SYSTEM_FRESH, BLOCKED_FLASH, STALE_SWAP = 6, 90, 3, 4, 120
 local HOUR = 3600
@@ -40,11 +40,11 @@ local function hidePopup(accepted)
   -- the popup declines on hide unless told the invite was accepted
   if dialog and accepted then dialog.inviteAccepted = 1 end
   StaticPopup_Hide("PARTY_INVITE")
+  return dialog ~= nil
 end
 
 local function decline(name, why)
-  pcall(DeclineGroup)
-  hidePopup(false)
+  if not hidePopup(false) then pcall(DeclineGroup) end
   LA.Log("decline", name, why)
   LA.Stats.Note("declined " .. why)
 end
@@ -61,13 +61,11 @@ end
 local function noteShown(s) return s.note ~= nil and GetTime() < s.noteUntil end
 
 local function progressOf(s)
-  local sent, total, more, busy = 0, 0, false, false
+  local waiting, search = 0, false
   for _, p in pairs(s.progress) do
-    sent, total = sent + p.sent, total + p.total
-    if p.sent < p.total then busy = true end
-    if p.more then more = true end
+    waiting, search = waiting + p.waiting, search or p.search
   end
-  return sent, total, more and not busy, busy
+  return s.askedCount, s.askedCount + waiting, search
 end
 
 local function finish(result, flashText, notice)
@@ -85,29 +83,51 @@ local function finish(result, flashText, notice)
   if flashText then LA.Flash(flashText, notice) else LA.Refresh() end
 end
 
-local armDeadline
+local armEnd
 
-local function checkDeadline(s)
+local function endAt(s)
+  local cap = math.max(s.started + SAFETY_CAP, s.anyUntil or 0)
+  if not s.exhausted then return cap end
+  return math.min(cap, math.max(s.activeAt + END_AFTER, s.anyUntil or 0))
+end
+
+local function checkEnd(s)
   if cur ~= s or s.phase ~= "asking" or s.fallback == "prefilled" then return end
-  if s.deadline > GetTime() then return armDeadline(s) end
-  finish("timeout", "No host found")
+  if endAt(s) > GetTime() then return armEnd(s) end
+  finish("timeout", "No hosts found")
 end
 
-armDeadline = function(s)
-  if s.deadlineTimer then s.deadlineTimer:Cancel() end
-  s.deadlineTimer = LA.After(s.deadline - GetTime(), checkDeadline, s)
+armEnd = function(s)
+  if s.endTimer then s.endTimer:Cancel() end
+  s.endTimer = LA.After(math.max(0, endAt(s) - GetTime()), checkEnd, s)
 end
 
-local function extend(s, sec)
-  s.deadline = math.max(s.deadline, GetTime() + sec)
-  armDeadline(s)
+local function touch(s)
+  s.activeAt = GetTime()
+  armEnd(s)
+end
+
+local armRound
+
+local function round(s)
+  if cur ~= s or s.phase ~= "asking" then return end
+  if LA.Each("Round", s) then return armRound(s) end
+  s.exhausted = true
+  checkEnd(s)
+end
+
+armRound = function(s)
+  if s.roundTimer then s.roundTimer:Cancel() end
+  s.exhausted = false
+  s.roundTimer = LA.After(ROUND_EVERY, round, s)
 end
 
 local function tryFallback(s, due)
-  if cur ~= s or s.fallback or s.phase ~= "asking" or s.found > 0 then return end
-  if (not due and GetTime() - s.started < FALLBACK_AFTER) or not LA.Setting("askAutoLayer") then return end
+  if cur ~= s or s.fallback or s.phase ~= "asking" then return end
+  if (not due and GetTime() - s.started < AUTOLAYER_AFTER) or not LA.Setting("askAutoLayer") then return end
   if LA.Each("Fallback", s) then
     s.fallback = "offered"
+    touch(s)
     LA.Refresh()
   end
 end
@@ -115,15 +135,13 @@ end
 local function refuse(s, key)
   if s.refused[key] then return end
   s.refused[key] = true
-  if not s.offers[key] then return end
-  s.found = s.found - 1
-  if s.found == 0 then tryFallback(s) end
+  if s.offers[key] then s.found = s.found - 1 end
 end
 
 local function prefillEnded(s, sent)
   if cur ~= s or s.fallback ~= "prefilled" then return end
   s.fallback = sent and "sent" or "offered"
-  extend(s, RETRY_WINDOW)
+  touch(s)
   LA.Refresh()
 end
 
@@ -132,11 +150,23 @@ local function askAutoLayer()
   if not s or s.phase ~= "asking" or s.fallback ~= "offered" then return end
   if LA.Each("Prefill", s, function(sent) prefillEnded(s, sent) end) == "prefilled" then
     s.fallback = "prefilled"
+    touch(s)
     LA.Refresh()
   end
 end
 
-local ASK_NOTICE = { text = "", tone = "swap", button = { text = "Ask AutoLayer", onClick = askAutoLayer } }
+local function searchMore()
+  local s = cur
+  if not s or s.phase ~= "asking" then return end
+  LA.Each("Search", s)
+  armRound(s)
+  touch(s)
+  LA.Refresh()
+end
+
+local ASK_BUTTON = { text = "Ask AutoLayer", onClick = askAutoLayer }
+local SEARCH_BUTTON = { text = "Search more", onClick = searchMore }
+local NOTICE = { text = "", tone = "swap", buttons = {} }
 
 local function retry(why, note)
   local s = cur
@@ -148,7 +178,8 @@ local function retry(why, note)
   setPhase(s, "asking")
   s.host, s.hostKey, s.leaving = nil, nil, nil
   s.note, s.noteUntil = note, GetTime() + NOTE_FOR
-  extend(s, RETRY_WINDOW)
+  armRound(s)
+  touch(s)
   tryFallback(s)
   LA.Refresh()
 end
@@ -156,12 +187,15 @@ end
 local function newAsk()
   local t = GetTime()
   local s = {
-    active = true, phase = "asking", started = t, deadline = t + ASK_WINDOW, phaseAt = t,
-    zone = LA.ZoneMapID(), asked = {}, offers = {}, refused = {}, found = 0, joins = 0, progress = {},
+    active = true, phase = "asking", started = t, activeAt = t, phaseAt = t, exhausted = false,
+    zone = LA.ZoneMapID(), asked = {}, askedCount = 0, offers = {}, refused = {}, found = 0, joins = 0, progress = {},
   }
   function s.Asked(name)
     local key = LA.NameKey(name)
-    if key then s.asked[key] = true end
+    if not key or s.asked[key] then return end
+    s.asked[key] = true
+    s.askedCount = s.askedCount + 1
+    LA.Refresh()
   end
   function s.Offer(name, netId)
     local key = LA.NameKey(name)
@@ -169,22 +203,28 @@ local function newAsk()
     s.offers[key] = true
     s.found = s.found + 1
     LA.Stats.Offered(netId, key)
+    touch(s)
     LA.Refresh()
   end
   function s.Refuse(name)
     local key = LA.NameKey(name)
     if key then refuse(s, key) end
   end
-  function s.Progress(netId, sent, total, more)
+  function s.Offered(name)
+    local key = LA.NameKey(name)
+    return key ~= nil and s.offers[key] == true and not s.refused[key]
+  end
+  function s.Progress(netId, waiting, search)
     local p = s.progress[netId] or {}
     s.progress[netId] = p
-    if sent > (p.sent or 0) then extend(s, RETRY_WINDOW) end
-    p.sent, p.total, p.more = sent, total, more and true or false
+    search = search and true or false
+    if search and not p.search then touch(s) end
+    p.waiting, p.search = waiting, search
     LA.Refresh()
   end
   function s.AllowAny(seconds)
     s.anyUntil = GetTime() + seconds
-    s.deadline = math.max(s.deadline, s.anyUntil)
+    armEnd(s)
   end
   return s
 end
@@ -196,8 +236,9 @@ function Swap.Start()
   LA.ClearFlash()
   LA.Log("ask", s.zone, InCombatLockdown() and "combat" or "")
   LA.Each("Ask", s)
-  armDeadline(s)
-  LA.After(FALLBACK_AFTER, tryFallback, s, true)
+  armRound(s)
+  armEnd(s)
+  LA.After(AUTOLAYER_AFTER, tryFallback, s, true)
   LA.Refresh()
 end
 
@@ -215,21 +256,9 @@ function Swap.Stop()
   end
 end
 
-function Swap.More()
-  LA.Each("More", cur)
-  LA.Refresh()
-end
-
-local function canAskMore(s)
-  return s.phase == "asking" and not noteShown(s) and s.fallback ~= "prefilled" and select(3, progressOf(s))
-end
-
 function LA.SwapClick()
   if LA.disabled or LA.Debug.Previewing() then return end
-  if cur then
-    if canAskMore(cur) then return Swap.More() end
-    return Swap.Stop()
-  end
+  if cur then return Swap.Stop() end
   if IsInInstance() then return LA.Flash("In an instance", nil, BLOCKED_FLASH) end
   if IsInGroup() and not LA.Host.Release() then return LA.Flash("In a group", nil, BLOCKED_FLASH) end
   Swap.Start()
@@ -253,22 +282,23 @@ function Swap.Owns(key)
 end
 
 local function askingStatus(s, v)
-  if s.fallback == "offered" and s.found == 0 then v.notice = ASK_NOTICE end
+  local asked, queued, search = progressOf(s)
+  local buttons = NOTICE.buttons
+  wipe(buttons)
+  if s.fallback == "offered" then buttons[#buttons + 1] = ASK_BUTTON end
+  if search and s.fallback ~= "prefilled" then buttons[#buttons + 1] = SEARCH_BUTTON end
+  if buttons[1] then v.notice = NOTICE end
   if noteShown(s) then
     v.status, v.tone, v.border = s.note, "fail", "fail"
     return LA.WakeIn(s.noteUntil - GetTime())
   end
   if s.fallback == "prefilled" then
     v.status, v.tone, v.border = "Press " .. LA.UI.SendKey() .. " to send", "warn", "fail"
-    return
+  elseif queued == 0 then
+    v.status = "Searching (" .. s.found .. " found)"
+  else
+    v.status = "Asking " .. asked .. "/" .. queued .. " – " .. s.found .. " found"
   end
-  local sent, total, more, busy = progressOf(s)
-  if busy then
-    v.status = "Asking " .. sent .. "/" .. total .. " – " .. s.found .. " found"
-    return
-  end
-  v.status = sent == 0 and "Searching (" .. s.found .. " found)" or "Asked " .. sent .. " – " .. s.found .. " found"
-  if more then v.swapText = "Ask more" end
 end
 
 local function movedStatus(s)

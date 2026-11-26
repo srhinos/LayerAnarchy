@@ -660,11 +660,7 @@ local function buildNote()
   note.text:SetPoint("TOPLEFT", 0, -NOTE_TEXT_TOP)
   note.text:SetPoint("TOPRIGHT", 0, -NOTE_TEXT_TOP)
   note.text:SetHeight(NOTE_TEXT_H)
-  note.button = button(note, ANCHORED_W, ROW)
-  note.button:SetScript("OnClick", function()
-    local onClick = note.cur.button.onClick
-    if onClick then onClick() end
-  end)
+  note.buttons, note.count = {}, 0
 end
 
 local function buildBox()
@@ -707,51 +703,62 @@ local function buildBox()
 
   box.help, box.swap, box.mini = help, swap, mini
   buildNote()
-  for _, f in ipairs({ box, mini, cog, bars, help, swap, note.button }) do watchHover(f) end
+  for _, f in ipairs({ box, mini, cog, bars, help, swap }) do watchHover(f) end
   applyHover()
 end
 
-local function noticeHeight(hasText, hasButton)
-  local h = NOTE_TEXT_TOP
-  if hasText then h = h + NOTE_TEXT_H end
-  if hasButton and hasText then h = h + NOTE_GAP end
-  return h
+local function noteButton(i)
+  local b = note.buttons[i]
+  if b then return b end
+  b = button(note, ANCHORED_W, ROW)
+  b:SetScript("OnClick", function(self)
+    if self.onClick then self.onClick() end
+  end)
+  watchHover(b)
+  note.buttons[i] = b
+  thinEdges()
+  return b
 end
 
-local function shapeNotice(hasText, hasButton)
-  local h = noticeHeight(hasText, hasButton)
+local function shapeNotice(hasText, count)
+  local h, gap = NOTE_TEXT_TOP + (hasText and NOTE_TEXT_H or 0), hasText and NOTE_GAP or 0
   note.text:SetShown(hasText)
-  note.button:SetShown(hasButton)
-  if hasButton then
-    note.button:ClearAllPoints()
-    note.button:SetPoint("TOPLEFT", 0, -h)
-    note.button:SetPoint("TOPRIGHT", 0, -h)
-    h = h + ROW
+  for i = 1, count do
+    local b = noteButton(i)
+    h = h + gap
+    b:ClearAllPoints()
+    b:SetPoint("TOPLEFT", 0, -h)
+    b:SetPoint("TOPRIGHT", 0, -h)
+    b:Show()
+    h, gap = h + ROW, GAP
   end
-  local shown = hasText or hasButton
+  for i = count + 1, #note.buttons do note.buttons[i]:Hide() end
+  local shown = hasText or count > 0
   note:SetHeight(h)
   note:SetShown(shown)
+  note.count = count
   box:SetHeight(BASE_H + (shown and h + NOTE_TOP or 0))
   if open then placeDrawer(open) end
 end
 
 local function drawNotice(n)
-  note.cur = n
-  local text = n and n.text
+  local text, list = n and n.text, n and n.buttons
   if text == "" then text = nil end
-  local btn = n and n.button
-  local shape = (text and 1 or 0) + (btn and 2 or 0)
+  local count = list and #list or 0
+  local shape = (text and 1 or 0) + 2 * count
   if shape ~= note.shape then
     note.shape = shape
-    shapeNotice(text ~= nil, btn ~= nil)
+    shapeNotice(text ~= nil, count)
   end
   if text then
     setText(note.text, text)
     tint(note.text, TONE[n.tone])
   end
-  if btn then
-    setText(note.button.label, btn.text)
-    setEdge(note.button, NOTE_EDGE[n.tone])
+  for i = 1, count do
+    local b = note.buttons[i]
+    b.onClick = list[i].onClick
+    setText(b.label, list[i].text)
+    setEdge(b, NOTE_EDGE[n.tone])
   end
 end
 
@@ -847,7 +854,7 @@ end
 
 function pad.Cursor()
   if not ConsolePort then return end
-  local want = open ~= nil or note.button:IsVisible()
+  local want = open ~= nil or (note.count > 0 and note:IsVisible())
   if want == pad.cursor then return end
   -- starts unknown: ConsolePort saves its cursor frames, so the first pass clears one left by a reload
   pad.cursor = want
