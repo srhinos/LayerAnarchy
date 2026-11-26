@@ -20,7 +20,7 @@ local NOTE_TOP, NOTE_TEXT_TOP, NOTE_TEXT_H, NOTE_GAP = 8, 7, 14, 5
 local OPT_H, PILL_W, PILL_H, HEAD_H, DRAWER_LEVEL = 22, 40, 18, 22, 5
 local DRAWER_INSET, HEAD_TOP, LIST_TOP, DRAWER_BOTTOM, ROW_INSET = 6, 4, 6, 6, 4
 local SLIDER_W, SLIDER_H, SLIDER_GAP, READOUT_W, TRACK_H, THUMB_W, THUMB_H = 56, 14, 4, 40, 3, 4, 10
-local STEP_W, STEP_GLYPH, PAD_ICON, PAD_BADGE = 14, 9, 18, 12
+local STEP_W, STEP_GLYPH, PAD_ICON = 14, 9, 14
 local STAT_H, SECTION_H, SECTION_BASE, COL_W, GRID_COLUMNS, RECHECK = 15, 18, 2, 42, 4, 15
 local SEG_H, SEG_GAP, SEG_INSET = 16, 4, 1
 local BARS_W, BARS_GAP, BARS_H = 3, 2, { 5, 9, 13 }
@@ -65,7 +65,7 @@ local root, box, hud, note, driver
 local sliders, skinned, hairs, rows = {}, {}, {}, {}
 local netRows, gridRows, segs = {}, {}, {}
 local drawers, toggles, revealed, dimmed = {}, {}, {}, {}
-local placed, pad = {}, { listed = false, focused = false, OFFSCREEN = -100000 }
+local placed, pad = {}, { listed = false, focused = false }
 local open, current
 
 local function Text(parent, font, size, c)
@@ -76,13 +76,12 @@ local function Text(parent, font, size, c)
   fs:SetJustifyH("LEFT")
   fs:SetWordWrap(false)
   fs:SetTextColor(c[1], c[2], c[3], c[4])
-  fs.tint, fs.prefix = c, false
+  fs.tint = c
   return fs
 end
 
 local function Set(fs, s)
   fs.text = s
-  if fs.prefix then s = fs.prefix .. s end
   if fs.cur == s then return false end
   fs.cur = s
   fs:SetText(s)
@@ -176,9 +175,6 @@ end
 
 local function Selectable(b, mark)
   b.mark, b.OnSmartNavSelect, b.OnSmartNavDeselect = mark, pad.Pick, pad.Unpick
-  if SmartNavigation_SetCustomCursorAnchorPointForFrame then
-    SmartNavigation_SetCustomCursorAnchorPointForFrame(b, CreateAnchor("CENTER", b, "CENTER", pad.OFFSCREEN, 0))
-  end
   return b
 end
 
@@ -191,7 +187,7 @@ local function Button(parent, w, h)
   b.label:SetJustifyH("CENTER")
   b.label:SetPoint("LEFT", BUTTON_INSET, 0)
   b.label:SetPoint("RIGHT", -BUTTON_INSET, 0)
-  return Selectable(b, pad.Label)
+  return Selectable(b)
 end
 
 local function LayoutDrawer(d, below)
@@ -348,7 +344,7 @@ local function Bare(parent, onClick, draw)
   b:SetScript("OnEnter", function(self) Paint(self.glyph, C.gold) end)
   b:SetScript("OnLeave", function(self) Paint(self.glyph, (self.held and self.held()) and C.gold or C.grey) end)
   b:SetScript("OnClick", onClick)
-  return Selectable(b, pad.Badge)
+  return Selectable(b)
 end
 
 local function DrawerButton(key, draw)
@@ -374,7 +370,7 @@ local function Label(r, text)
 end
 
 local function OptionRow(list, i, text, key)
-  local r = Selectable(Row(list, (i - 1) * OPT_H, OPT_H, "Button"), pad.Label)
+  local r = Selectable(Row(list, (i - 1) * OPT_H, OPT_H, "Button"))
   Solid(r, "HIGHLIGHT", C.hover):SetAllPoints()
   r.label = Label(r, text)
   local pill = CreateFrame("Frame", nil, r)
@@ -550,7 +546,7 @@ local function Segment(head, right)
   Skin(seg, C.bg, BORDER.neutral)
   local x = SEG_INSET
   for i, w in ipairs(WINDOWS) do
-    local b = Selectable(CreateFrame("Button", nil, seg), pad.Badge)
+    local b = Selectable(CreateFrame("Button", nil, seg))
     b:SetSize(w[3], SEG_H - 2 * SEG_INSET)
     b:SetPoint("LEFT", x, 0)
     b.picked = Solid(b, "BACKGROUND", C.btn)
@@ -794,7 +790,7 @@ local function DrawBox(v)
 end
 
 local function BuildHud()
-  hud = Selectable(CreateFrame("Button", nil, root), pad.Badge)
+  hud = Selectable(CreateFrame("Button", nil, root))
   hud:SetSize(HUD_MIN_W, HUD_H)
   Draggable(hud)
   hud:SetScript("OnMouseDown", function(self) self.moved = nil end)
@@ -830,28 +826,13 @@ function pad.Atlas() return InputIconTextureSetUtility.GetNormalActiveInputIconB
 
 function pad.Icon() return CreateAtlasMarkup(pad.Atlas(), PAD_ICON, PAD_ICON) end
 
-function pad.Label(b, on)
-  local fs = b.label
-  fs.prefix = on and pad.Icon() .. " "
-  Set(fs, fs.text or "")
-end
 
-function pad.Badge(b, on)
-  if not b.badge then
-    if not on then return end
-    b.badge = (b.glyph or b):CreateTexture(nil, "OVERLAY")
-    b.badge:SetSize(PAD_BADGE, PAD_BADGE)
-    b.badge:SetPoint("CENTER", b, "BOTTOMRIGHT")
-  end
-  if on then b.badge:SetAtlas(pad.Atlas()) end
-  b.badge:SetShown(on)
-end
 
 function pad.Tint(b, on) b.tint:SetShown(on) end
 
 function pad.Mark(b, on)
   if on then pad.picked = b elseif pad.picked == b then pad.picked = nil end
-  b.mark(b, on)
+  if b.mark then b.mark(b, on) end
 end
 
 function pad.Pick(b) LA.Try("pad", pad.Mark, b, true) end
