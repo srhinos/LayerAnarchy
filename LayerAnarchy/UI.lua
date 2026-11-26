@@ -20,7 +20,7 @@ local NOTE_TOP, NOTE_TEXT_TOP, NOTE_TEXT_H, NOTE_GAP = 8, 7, 14, 5
 local OPT_H, PILL_W, PILL_H, HEAD_H, DRAWER_LEVEL = 22, 40, 18, 22, 5
 local DRAWER_INSET, HEAD_TOP, LIST_TOP, DRAWER_BOTTOM, ROW_INSET = 6, 4, 6, 6, 4
 local SLIDER_W, SLIDER_H, SLIDER_GAP, READOUT_W, TRACK_H, THUMB_W, THUMB_H = 56, 14, 4, 40, 3, 4, 10
-local STEP_W, STEP_GLYPH, PAD_ICON, PAD_BADGE = 14, 9, 14, 12
+local STEP_W, STEP_GLYPH, PAD_ICON, PAD_BADGE = 14, 9, 18, 12
 local STAT_H, SECTION_H, SECTION_BASE, COL_W, GRID_COLUMNS, RECHECK = 15, 18, 2, 42, 4, 15
 local SEG_H, SEG_GAP, SEG_INSET = 16, 4, 1
 local BARS_W, BARS_GAP, BARS_H = 3, 2, { 5, 9, 13 }
@@ -65,7 +65,7 @@ local root, box, hud, note, driver
 local sliders, skinned, hairs, rows = {}, {}, {}, {}
 local netRows, gridRows, segs = {}, {}, {}
 local drawers, toggles, revealed, dimmed = {}, {}, {}, {}
-local placed, pad = {}, { listed = false, focused = false }
+local placed, pad = {}, { listed = false, focused = false, OFFSCREEN = -100000 }
 local open, current
 
 local function Text(parent, font, size, c)
@@ -176,6 +176,9 @@ end
 
 local function Selectable(b, mark)
   b.mark, b.OnSmartNavSelect, b.OnSmartNavDeselect = mark, pad.Pick, pad.Unpick
+  if SmartNavigation_SetCustomCursorAnchorPointForFrame then
+    SmartNavigation_SetCustomCursorAnchorPointForFrame(b, CreateAnchor("CENTER", b, "CENTER", pad.OFFSCREEN, 0))
+  end
   return b
 end
 
@@ -982,6 +985,7 @@ function UI.Focus()
   if not current or pad.Restricted() or not InputUtil.IsGamepadUIEnabled() then return end
   pad.Prepare()
   pad.listed = true
+  SmartNavigation:SetTargetButtonForFrame(root, current == hud and hud or box.swap)
   -- as a popup it survives the game's HUD edit mode, which hides the other listed windows
   GamepadMode.FrameControlsManager:FrameShown(root, true)
   pad.Select(current == hud and hud or box.swap)
