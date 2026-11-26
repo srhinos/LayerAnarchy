@@ -1,6 +1,6 @@
 # Layer Anarchy
 
-## 0.1.2
+## 0.2.0
 
 **Layers you can recognise and go back to**
 - Layer letters now mean something. Layer Anarchy recognises a layer from the creatures around you, so coming back to one shows its old letter and how long you were away ("Layer B · back after 4m"). A "?" means it hasn't confirmed which layer yet; while it shows, nameplates flash on for a moment now and then to read the creatures around you.
