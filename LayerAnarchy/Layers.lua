@@ -7,6 +7,11 @@ local LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 local GUIDS_KEPT, GUIDS_SLACK, SETTLE_AFTER, SWEEP_AFTER = 300, 60, 12, 3
 local FORGET_AFTER, TRUST_FOR, SKIP_FOR, READING_FRESH = 7200, 1200, 75, 60
 local MINUTE, HOUR = 60, 3600
+local SHOW = {
+  nameplateShowAll = "1", nameplateShowEnemies = "1", nameplateShowFriendlyNPCs = "1", nameplateShowFriendlyPlayers = "0",
+}
+local CROWD_CVAR, CROWD, REVEAL_EVERY, REVEAL_WAIT = "nameplateShowFriendlyPlayers", 20, 10, 1
+local UNLOCK_EVENTS = { "PLAYER_REGEN_ENABLED", "ADDON_RESTRICTION_STATE_CHANGED" }
 local KINDS = { Creature = true, Vehicle = true }
 local GUID_FIELDS = "^(%a+)%-%d+%-(%d+)%-%d+%-(%d+)%-"
 local UNIT_EVENTS = {
@@ -16,7 +21,7 @@ local UNIT_EVENTS = {
 local NO_LAYER = "Layer –"
 local EMPTY = {}
 
-local realm, here, last, holdUntil, sweepTimer
+local realm, here, last, holdUntil, sweepTimer, revealer
 local reach, readings, rows = {}, {}, {}
 
 local function readingOf(guid)
@@ -59,6 +64,12 @@ local function alive(z, rec)
   if rec and z.store.records[rec.letter] == rec then return rec end
 end
 
+local function own(z, guid, rec)
+  z.byGuid[guid] = rec
+  local reading = readingOf(guid)
+  if reading then z.byReading[reading] = rec end
+end
+
 local function unown(z, guid, rec)
   if z.byGuid[guid] == rec then z.byGuid[guid] = nil end
   local reading = readingOf(guid)
@@ -93,11 +104,7 @@ local function prune(z, rec)
 end
 
 local function index(z, rec)
-  for guid in pairs(rec.guids) do
-    z.byGuid[guid] = rec
-    local reading = readingOf(guid)
-    if reading then z.byReading[reading] = rec end
-  end
+  for guid in pairs(rec.guids) do own(z, guid, rec) end
   for key, e in pairs(rec.hosts) do
     local other = z.byHost[key]
     if not e.stale and not (other and other.hosts[key].at > e.at) then z.byHost[key] = rec end
@@ -114,9 +121,7 @@ local function merge(z, a, b)
   for guid, seq in pairs(gone.guids) do
     if not keep.guids[guid] then keep.size = keep.size + 1 end
     keep.guids[guid] = math.max(keep.guids[guid] or 0, seq)
-    z.byGuid[guid] = keep
-    local reading = readingOf(guid)
-    if reading then z.byReading[reading] = keep end
+    own(z, guid, keep)
   end
   for key, e in pairs(gone.hosts) do
     local mine = keep.hosts[key]
@@ -137,9 +142,10 @@ local function merge(z, a, b)
   return keep, gone
 end
 
-local function notify(text, tone)
+local function notify(letter, from)
+  local text = from and ("Layer " .. from .. " was " .. letter) or ("Landed on Layer " .. letter)
   LA.Log("layer", text)
-  LA.Flash(text, nil, nil, tone)
+  LA.Flash(text, nil, nil, from and "idle")
 end
 
 local function leave(z, live)
@@ -190,12 +196,12 @@ local function newRecord(z)
 end
 
 local function expect(z, rec, quiet)
-  local text, tone = "Landed on Layer " .. rec.letter, nil
-  if not z.expect then text, tone = "Layer " .. z.rec.letter .. " was " .. rec.letter, "idle" end
+  local expected = z.expect
   z.expect, z.store.back = rec, rec.leftAt and time() - rec.leftAt
   syncStore(z)
   if quiet then return LA.Refresh() end
-  notify(text, tone)
+  if expected then return notify(rec.letter) end
+  notify(rec.letter, z.rec.letter)
 end
 
 local function sameAs(z, rec, byHost, quiet)
@@ -206,15 +212,15 @@ local function sameAs(z, rec, byHost, quiet)
   local keep, gone = merge(z, cur, rec)
   arrive(z, keep, back)
   if quiet or rec == wanted then return end
-  if wanted then return notify("Landed on Layer " .. keep.letter) end
-  notify("Layer " .. gone.letter .. " was " .. keep.letter, "idle")
+  if wanted then return notify(keep.letter) end
+  notify(keep.letter, gone.letter)
 end
 
 local function sameRecords(z, a, b, quiet)
   if a == z.rec then return sameAs(z, b, true, quiet) end
   if b == z.rec then return sameAs(z, a, true, quiet) end
   local keep, gone = merge(z, a, b)
-  if not quiet then notify("Layer " .. gone.letter .. " was " .. keep.letter, "idle") end
+  if not quiet then notify(keep.letter, gone.letter) end
 end
 
 local function freshReading(key)
@@ -262,9 +268,76 @@ local function see(unit)
   if reading then add(z, z.rec, guid, reading) end
 end
 
-local function sweep()
-  sweepTimer = nil
+local function unsettled()
+  local z = here
+  return z ~= nil and z.rec ~= nil and z.rec.provisional
+end
+
+local function seePlates()
   for _, plate in ipairs(C_NamePlate.GetNamePlates() or EMPTY) do see(plate.namePlateUnitToken) end
+end
+
+local function restorePlates()
+  local back = LA.db.platesBack
+  if not back or LA.CombatLocked() then return end
+  for name, was in pairs(back) do
+    if C_CVar.GetCVar(name) == SHOW[name] then C_CVar.SetCVar(name, was) end
+  end
+  LA.db.platesBack = nil
+end
+
+local sweep
+
+local function sweepAgain()
+  if sweepTimer or revealer:IsShown() or not unsettled() or LA.CombatLocked() then return end
+  sweepTimer = LA.After(REVEAL_EVERY, sweep)
+end
+
+local function waitPlates(frame, elapsed)
+  frame.left = frame.left - elapsed
+  if frame.left > 0 and unsettled() then return end
+  frame:Hide()
+  LA.Try("layers", seePlates)
+  restorePlates()
+  sweepAgain()
+end
+
+-- in a town the players' plates can fill the game's 40 before any creature's shows
+local function crowded()
+  local n = 0
+  for _, plate in ipairs(C_NamePlate.GetNamePlates() or EMPTY) do
+    local guid = LA.Safe(UnitGUID(plate.namePlateUnitToken))
+    if guid and guid:find("^Player%-") then n = n + 1 end
+  end
+  return n >= CROWD
+end
+
+local function reveal()
+  local back, crowd = {}, crowded()
+  LA.db.platesBack = back
+  for name, want in pairs(SHOW) do
+    local was = C_CVar.GetCVar(name)
+    if was and was ~= want and (name ~= CROWD_CVAR or crowd) and C_CVar.SetCVar(name, want) then back[name] = was end
+  end
+  if not next(back) then
+    LA.db.platesBack = nil
+    return false
+  end
+  revealer.left = REVEAL_WAIT
+  revealer:Show()
+  return true
+end
+
+sweep = function()
+  sweepTimer = nil
+  if unsettled() and not LA.CombatLocked() and reveal() then return end
+  seePlates()
+  sweepAgain()
+end
+
+local function unlocked()
+  restorePlates()
+  sweepAgain()
 end
 
 local function sweepSoon(after)
@@ -310,6 +383,12 @@ local function onZoneChanged()
   if not (here and here.id == id) then focus(id, true) end
 end
 
+local function forgetInvites(invited, now)
+  for key, at in pairs(invited) do
+    if now - at >= SKIP_FOR then invited[key] = nil end
+  end
+end
+
 local function forgetStores(now)
   for _, r in pairs(LA.db.layers) do
     for id, store in pairs(r.zones) do
@@ -318,9 +397,7 @@ local function forgetStores(now)
       end
       if not next(store.records) then r.zones[id] = nil end
     end
-    for key, at in pairs(r.invited) do
-      if now - at >= SKIP_FOR then r.invited[key] = nil end
-    end
+    forgetInvites(r.invited, now)
   end
 end
 
@@ -378,11 +455,9 @@ end
 function Layers.Invited(name, sameLayer)
   local key = LA.NameKey(name)
   if not key then return end
-  local now, invited = time(), realm.invited
-  for k, at in pairs(invited) do
-    if now - at >= SKIP_FOR then invited[k] = nil end
-  end
-  invited[key] = now
+  local now = time()
+  forgetInvites(realm.invited, now)
+  realm.invited[key] = now
   local z = here
   if sameLayer and z and z.rec then confirm(z, z.rec, name, key) end
 end
@@ -470,6 +545,11 @@ function Layers.Init()
   realm = db.layers[name] or { zones = {}, invited = {} }
   db.layers[name] = realm
   forgetStores(time())
+  restorePlates()
+  revealer = CreateFrame("Frame")
+  revealer:Hide()
+  revealer:SetScript("OnUpdate", LA.Guard("layers", waitPlates))
+  for _, event in ipairs(UNLOCK_EVENTS) do LA.On(event, unlocked) end
   LA.On("PLAYER_ENTERING_WORLD", onEnteringWorld)
   LA.On("ZONE_CHANGED_NEW_AREA", onZoneChanged)
   LA.On("NAME_PLATE_UNIT_ADDED", function(_, unit) see(LA.Safe(unit)) end)

@@ -111,7 +111,6 @@ end
 local function replyLater(callback, names, why) LA.After(0, callback, names, why) end
 
 local function sendWho(p)
-  if who.pending ~= p then return end
   if not muteWhoLists() and InCombatLockdown() then return whoDone(p, nil, "combat") end
   -- IsVisible: the Who list keeps its shown flag after its panel closes
   p.panelWasOpen = LFGParentFrame ~= nil and LFGParentFrame:IsVisible()

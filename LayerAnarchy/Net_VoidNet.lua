@@ -80,6 +80,8 @@ local function locked() return InCombatLockdown() or C_ChatInfo.InChatMessagingL
 
 local pump
 
+local function tokensAt(t) return math.min(BURST, tokens + (t - filled) / REFILL) end
+
 local function refill()
   pumping = false
   pump()
@@ -88,8 +90,7 @@ end
 pump = function()
   if held then return end
   local t = GetTime()
-  tokens = math.min(BURST, tokens + (t - filled) / REFILL)
-  filled = t
+  tokens, filled = tokensAt(t), t
   while tokens >= 1 and queue[1] do
     local m = table.remove(queue, 1)
     if not m.exp or m.exp > t then
@@ -126,10 +127,9 @@ local function send(prefix, text, to, urgent, life)
   pump()
 end
 
-local function sendRoom(life)
-  local ready = math.min(BURST, tokens + (GetTime() - filled) / REFILL)
-  return math.floor(ready + life / REFILL) - #queue
-end
+local function sendRoom(life) return math.floor(tokensAt(GetTime()) + life / REFILL) - #queue end
+
+local function question(ttl, zone, nonce, asker) return ("Q:1:%d:%d:%s:%s"):format(ttl, zone, nonce, asker) end
 
 local function reachable(key, t)
   if LA.Offline(key) then return false end
@@ -407,7 +407,7 @@ local function wave(st)
   local targets = pick(room, st.asked)
   if #targets == 0 then return false end
   st.lastQ = GetTime()
-  local text = ("Q:1:1:%d:%s:%s"):format(st.zone, st.nonce, me)
+  local text = question(1, st.zone, st.nonce, me)
   for _, name in ipairs(targets) do
     local key = LA.NameKey(name)
     if key then
@@ -422,7 +422,7 @@ local function wave(st)
 end
 
 local function relay(zone, nonce, asker, exclude)
-  local text = ("Q:1:0:%d:%s:%s"):format(zone, nonce, asker)
+  local text = question(0, zone, nonce, asker)
   for _, name in ipairs(pickRandom(RELAY, exclude)) do send(VL, text, name, false, RELAY_TTL) end
 end
 
@@ -583,7 +583,7 @@ function NET.Target(_, ask, names)
   if not (ask.zone and validName(me)) then return 0 end
   local st, t = newState(ask), GetTime()
   st.only, st.lastQ = {}, t
-  local text = ("Q:1:1:%d:%s:%s"):format(st.zone, st.nonce, me)
+  local text = question(1, st.zone, st.nonce, me)
   for _, name in ipairs(names) do
     local key = LA.NameKey(name)
     if key and not LA.Offline(key) then

@@ -616,6 +616,10 @@ function LA.PhaseOf(unit)
   return phase
 end
 
+function LA.CombatLocked()
+  return InCombatLockdown() or C_RestrictedActions.IsAddOnRestrictionActive(Enum.AddOnRestrictionType.Combat)
+end
+
 function LA.LeaveGroup(why)
   LA.Log("leave", why)
   LA.ExpectGroupLines()
@@ -886,8 +890,7 @@ local function movedBack()
 end
 
 local function judgeTransfer(at, wasRefresh)
-  if crossedBorder(at) and not wasRefresh then return end
-  if not wasRefresh and movedBack() then return end
+  if not wasRefresh and (crossedBorder(at) or movedBack()) then return end
   LA.Moved(wasRefresh and "world refresh" or "transfer")
 end
 

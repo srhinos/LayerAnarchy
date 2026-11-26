@@ -30,12 +30,11 @@ local HUD_TEXT_TOP, HUD_LINE_GAP, HUD_WIDTH_STEP = 7, 3, 8
 local COG_SIZE, MINI_SIZE, CLOSE_SIZE = 13, 12, 13
 local SIZE = {
   line1 = 16, line2 = 13, button = 11, title = 11, option = 10, infinity = 16,
-  note = 12, hud = 12, stat = 11, caption = 9, seg = 10, chevron = 11, back = 11, layer = 11, layerSub = 10, foot = 9.5,
+  note = 12, hud = 12, stat = 11, caption = 9, seg = 10, chevron = 11, back = 11, layer = 11, layerSub = 10,
 }
 local LIST = {
   NAME = "LayerAnarchyLayers", W = 176, ROW_H = 34, ROW_TOP = 5, WHEN_TOP = 6, LINE_GAP = 3,
-  FOOT_GAP = 4, FOOT_TOP = 5, FOOT_H = 24, CHEVRON_W = 5, CHEVRON_GAP = 4, BACK_GAP = 2, TITLE_PAD = 3, TICK = 1,
-  READY = "|cff5fd88a", WAIT = "|cfff0a64a", FOOT = "Hosts skip you for about a minute after they invite you.",
+  CHEVRON_W = 5, CHEVRON_GAP = 4, BACK_GAP = 2, TITLE_PAD = 3, TICK = 1, READY = "|cff5fd88a", WAIT = "|cfff0a64a",
 }
 local CROSS, PLUS = { 45, -45 }, { 0, 90 }
 local MAX_INVITES, SCALE_MIN, SCALE_MAX, SCALE_STEP = 100, 0.7, 1.5, 0.05
@@ -461,7 +460,7 @@ end
 
 local function scaleText(v) return math.floor(v * 100 + 0.5) .. "%" end
 
-local function drawer(key, name, title)
+local function drawer(name, title, onHide)
   local d = CreateFrame("Frame", name, box)
   d:EnableMouse(true)
   d:SetClampedToScreen(true)
@@ -469,14 +468,13 @@ local function drawer(key, name, title)
   d:SetFrameLevel(box:GetFrameLevel() + DRAWER_LEVEL)
   skin(d, C.bg, BORDER.neutral)
   tinsert(UISpecialFrames, name)
-  d:SetScript("OnHide", drawerHidden)
+  d:SetScript("OnHide", onHide)
   d.head = CreateFrame("Frame", nil, d)
   d.head:SetHeight(HEAD_H)
   label(d.head, FONT, SIZE.title, C.value, title)
-  d.close = glyphButton(d.head, closeDrawer, icon(CLOSE_SIZE, ICON.minus, CROSS))
+  d.close = glyphButton(d.head, function() d:Hide() end, icon(CLOSE_SIZE, ICON.minus, CROSS))
   d.close:SetPoint("RIGHT")
   d.body = CreateFrame("Frame", nil, d)
-  drawers[key] = d
   return d
 end
 
@@ -486,7 +484,8 @@ local function fitDrawer(d, bodyH)
 end
 
 local function buildOptions()
-  local d = drawer("options", "LayerAnarchyOptions", "Options")
+  local d = drawer("LayerAnarchyOptions", "Options", drawerHidden)
+  drawers.options = d
   local list = d.body
   for i, o in ipairs(OPTIONS) do optionRow(list, i, o[1], o[2]) end
   sliderRow(list, #OPTIONS + 1, "Invites per hour", "invitesPerHour", 0, MAX_INVITES, 1, invitesText,
@@ -643,7 +642,8 @@ local function syncNetwork()
 end
 
 local function buildNetwork()
-  local d = drawer("network", "LayerAnarchyNetwork", "Network")
+  local d = drawer("LayerAnarchyNetwork", "Network", drawerHidden)
+  drawers.network = d
   segment(d.head, d.close)
   local y = buildTable(d.body)
   y = section(d.body, y, "YOUR SWAPS", SWAPS)
@@ -709,11 +709,7 @@ function layers.Pick(r) if r.rec then LA.SwapTo(r.rec) end end
 function layers.Row(i)
   local r = layers.rows[i]
   if r then return r end
-  local y = HEAD_TOP + HEAD_H + (i - 1) * LIST.ROW_H
-  r = CreateFrame("Button", nil, layers.panel)
-  r:SetHeight(LIST.ROW_H)
-  r:SetPoint("TOPLEFT", DRAWER_INSET, -y)
-  r:SetPoint("TOPRIGHT", -DRAWER_INSET, -y)
+  r = row(layers.panel.body, (i - 1) * LIST.ROW_H, LIST.ROW_H, "Button")
   solid(r, "HIGHLIGHT", C.hover):SetAllPoints()
   r.busy = solid(r, "BACKGROUND", C.busy)
   r.busy:SetAllPoints()
@@ -749,16 +745,6 @@ function layers.Draw(r, row)
   r:Show()
 end
 
-function layers.Fit()
-  local p, y = layers.panel, HEAD_TOP + HEAD_H + layers.count * LIST.ROW_H + LIST.FOOT_GAP
-  p.rule:ClearAllPoints()
-  p.rule:SetPoint("TOPLEFT", DRAWER_INSET, -y)
-  p.rule:SetPoint("TOPRIGHT", -DRAWER_INSET, -y)
-  p.foot:ClearAllPoints()
-  p.foot:SetPoint("TOPLEFT", DRAWER_INSET + ROW_INSET, -(y + LIST.FOOT_TOP))
-  p:SetHeight(y + LIST.FOOT_TOP + LIST.FOOT_H + DRAWER_BOTTOM)
-end
-
 function layers.Sync()
   if not layers.panel:IsShown() then return end
   local list = LA.Debug.Layers() or LA.Layers.List()
@@ -766,7 +752,7 @@ function layers.Sync()
   for i = #list + 1, #layers.rows do layers.rows[i]:Hide() end
   if layers.count ~= #list then
     layers.count = #list
-    layers.Fit()
+    fitDrawer(layers.panel, layers.count * LIST.ROW_H)
   end
 end
 
@@ -795,31 +781,11 @@ function layers.Hidden()
 end
 
 function layers.Build()
-  local p = CreateFrame("Frame", LIST.NAME, box)
-  p:EnableMouse(true)
-  p:SetClampedToScreen(true)
-  p:Hide()
-  p:SetFrameLevel(box:GetFrameLevel() + DRAWER_LEVEL)
+  local p = drawer(LIST.NAME, "Layers here", layers.Hidden)
   p:SetWidth(LIST.W)
-  skin(p, C.bg, BORDER.neutral)
-  tinsert(UISpecialFrames, LIST.NAME)
-  local head = CreateFrame("Frame", nil, p)
-  head:SetHeight(HEAD_H)
-  head:SetPoint("TOPLEFT", DRAWER_INSET, -HEAD_TOP)
-  head:SetPoint("TOPRIGHT", -DRAWER_INSET, -HEAD_TOP)
-  label(head, FONT, SIZE.title, C.value, "Layers here")
-  glyphButton(head, function() p:Hide() end, icon(CLOSE_SIZE, ICON.minus, CROSS)):SetPoint("RIGHT")
-  p.rule = solid(p, "ARTWORK", C.rule)
-  hairs[#hairs + 1] = p.rule
-  p.foot = fontString(p, NARROW, SIZE.foot, C.dim)
-  p.foot:SetWordWrap(true)
-  p.foot:SetJustifyV("TOP")
-  p.foot:SetSize(LIST.W - 2 * (DRAWER_INSET + ROW_INSET), LIST.FOOT_H)
-  setText(p.foot, LIST.FOOT)
-  layers.panel, layers.rows, layers.count, layers.tick = p, {}, -1, LA.Guard("ui", layers.Sync)
+  layoutDrawer(p, true)
   p:SetScript("OnShow", layers.Shown)
-  p:SetScript("OnHide", layers.Hidden)
-  thinEdges()
+  layers.panel, layers.rows, layers.count, layers.tick = p, {}, -1, LA.Guard("ui", layers.Sync)
 end
 
 local function buildNote()
@@ -835,7 +801,7 @@ local function buildNote()
   note.text:SetPoint("TOPLEFT", 0, -NOTE_TEXT_TOP)
   note.text:SetPoint("TOPRIGHT", 0, -NOTE_TEXT_TOP)
   note.text:SetHeight(NOTE_TEXT_H)
-  note.buttons, note.count = {}, 0
+  note.buttons = {}
 end
 
 local function buildBox()
@@ -908,7 +874,6 @@ local function shapeNotice(hasText, count)
   local shown = hasText or count > 0
   note:SetHeight(h)
   note:SetShown(shown)
-  note.count = count
   box:SetHeight(BASE_H + (shown and h + NOTE_TOP or 0))
   if open then placeDrawer(open) end
 end
@@ -983,12 +948,6 @@ local function drawHud(v)
   paint(hud.glyph, GLYPH[v.border])
 end
 
-
-
-function pad.Restricted()
-  return InCombatLockdown() or C_RestrictedActions.IsAddOnRestrictionActive(Enum.AddOnRestrictionType.Combat)
-end
-
 function pad.Leave()
   pad.release = nil
   if not pad.listed then return end
@@ -1026,7 +985,8 @@ end
 
 function pad.Cursor()
   if not ConsolePort then return end
-  local want = open ~= nil or layers.panel:IsShown() or (note.count > 0 and note:IsVisible())
+  local first = note.buttons[1]
+  local want = open ~= nil or layers.panel:IsShown() or (first ~= nil and first:IsVisible())
   if want == pad.cursor then return end
   -- starts unknown: ConsolePort saves its cursor frames, so the first pass clears one left by a reload
   pad.cursor = want
@@ -1063,7 +1023,7 @@ function pad.Print()
   local manager = GamepadMode.FrameControlsManager
   LA.Print(string.format("pad: gamepad UI %s · listed %s · focused %s · UI focus %s · windows %d · combat %s · ConsolePort %s",
     tostring(InputUtil.IsGamepadUIEnabled()), tostring(pad.listed), tostring(pad.focused), tostring(manager.isUIFocused),
-    manager:GetShownFrameCount(), tostring(pad.Restricted()), tostring(pad.cursor)))
+    manager:GetShownFrameCount(), tostring(LA.CombatLocked()), tostring(pad.cursor)))
 end
 
 local function buildRoot()
@@ -1101,7 +1061,7 @@ end
 -- listed only on request: a listed window takes the controller whenever another window closes
 function UI.Focus()
   if pad.listed then return pad.Leave() end
-  if not current or pad.Restricted() or not InputUtil.IsGamepadUIEnabled() then return end
+  if not current or LA.CombatLocked() or not InputUtil.IsGamepadUIEnabled() then return end
   pad.Prepare()
   pad.listed = true
   -- as a popup it survives the game's HUD edit mode, which hides the other listed windows

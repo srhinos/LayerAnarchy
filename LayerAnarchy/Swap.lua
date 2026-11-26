@@ -88,15 +88,13 @@ local armEnd
 local function endAt(s)
   local cap = math.max(s.started + SAFETY_CAP, s.anyUntil or 0)
   if not s.exhausted then return cap end
-  return math.min(cap, math.max(s.activeAt + (s.target and TARGET_WAIT or END_AFTER), s.anyUntil or 0))
+  return math.min(cap, math.max(s.activeAt + s.endAfter, s.anyUntil or 0))
 end
-
-local function unanswered(s) return "No Layer " .. s.target.letter .. " host answered" end
 
 local function checkEnd(s)
   if cur ~= s or s.phase ~= "asking" or s.fallback == "prefilled" then return end
   if endAt(s) > GetTime() then return armEnd(s) end
-  finish("timeout", s.target and unanswered(s) or "No hosts found")
+  finish("timeout", s.noAnswer)
 end
 
 armEnd = function(s)
@@ -200,6 +198,8 @@ local function newAsk(target)
   local t = GetTime()
   local s = {
     active = true, phase = "asking", started = t, activeAt = t, phaseAt = t, exhausted = target ~= nil, target = target,
+    endAfter = target and TARGET_WAIT or END_AFTER,
+    noAnswer = target and ("No Layer " .. target.letter .. " host answered") or "No hosts found",
     zone = LA.ZoneMapID(), asked = {}, askedCount = 0, offers = {}, refused = {}, found = 0, joins = 0, progress = {},
     skips = {}, skipped = 0,
   }
@@ -280,7 +280,7 @@ local function startTargeted(rec)
     end
   end
   for netId, names in pairs(byNet) do t.count = t.count + (LA.Call(LA.Net(netId), "Target", s, names) or 0) end
-  if t.count == 0 then return finish("timeout", unanswered(s)) end
+  if t.count == 0 then return finish("timeout", s.noAnswer) end
   armEnd(s)
   LA.Refresh()
 end
