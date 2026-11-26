@@ -1,5 +1,9 @@
 # Layer Anarchy
 
+## 0.2.1
+
+- The nameplate flash while the layer shows "?" is now a blink: nameplates go back the moment they appear, and it retries every 5 seconds instead of 10.
+
 ## 0.2.0
 
 **Layers you can recognise and go back to**

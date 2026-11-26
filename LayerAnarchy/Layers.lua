@@ -10,7 +10,7 @@ local MINUTE, HOUR = 60, 3600
 local SHOW = {
   nameplateShowAll = "1", nameplateShowEnemies = "1", nameplateShowFriendlyNPCs = "1", nameplateShowFriendlyPlayers = "0",
 }
-local CROWD_CVAR, CROWD, REVEAL_EVERY, REVEAL_WAIT, SWEEPS = "nameplateShowFriendlyPlayers", 20, 10, 1, 4
+local CROWD_CVAR, CROWD, REVEAL_EVERY, REVEAL_WAIT, SWEEPS = "nameplateShowFriendlyPlayers", 20, 5, 0.5, 4
 local UNLOCK_EVENTS = { "PLAYER_REGEN_ENABLED", "ADDON_RESTRICTION_STATE_CHANGED" }
 local KINDS = { Creature = true, Vehicle = true }
 local GUID_FIELDS = "^(%a+)%-%d+%-(%d+)%-%d+%-(%d+)%-"
@@ -297,7 +297,7 @@ end
 
 local function waitPlates(frame, elapsed)
   frame.left = frame.left - elapsed
-  if frame.left > 0 and unsettled() then return end
+  if frame.left > 0 and unsettled() and not frame.shown then return end
   frame:Hide()
   LA.Try("layers", seePlates)
   restorePlates()
@@ -317,7 +317,7 @@ end
 
 local function reveal()
   local back, crowd = {}, crowded()
-  LA.db.platesBack = back
+  LA.db.platesBack, revealer.shown = back, false
   for name, want in pairs(SHOW) do
     local was = C_CVar.GetCVar(name)
     if was and was ~= want and (name ~= CROWD_CVAR or crowd) and C_CVar.SetCVar(name, want) then back[name] = was end
@@ -556,7 +556,10 @@ function Layers.Init()
   for _, event in ipairs(UNLOCK_EVENTS) do LA.On(event, unlocked) end
   LA.On("PLAYER_ENTERING_WORLD", onEnteringWorld)
   LA.On("ZONE_CHANGED_NEW_AREA", onZoneChanged)
-  LA.On("NAME_PLATE_UNIT_ADDED", function(_, unit) see(LA.Safe(unit)) end)
+  LA.On("NAME_PLATE_UNIT_ADDED", function(_, unit)
+    revealer.shown = true
+    see(LA.Safe(unit))
+  end)
   for event, unit in pairs(UNIT_EVENTS) do LA.On(event, function() see(unit) end) end
   LA.Command("diag layers", printLayers)
 end
