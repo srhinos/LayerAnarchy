@@ -19,13 +19,12 @@ local API_CHECKS = {
   "C_ChatInfo.AreOutgoingAddonChatMessagesRestricted",
 }
 
-local LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 local TOKEN_MIN, TOKEN_MAX = 100000, 999999
 local MINUTE, HOUR, DAY = 60, 3600, 86400
 local LOG_MAX, LOG_SHOWN, FLASH_FOR, WAKE_SLACK = 400, 30, 10, 0.02
 local MIN_WINDOW, MOVES_MAX, LOCKOUTS_MAX, SECONDS_SHOWN = 300, 200, 50, 60
 local COUNTDOWN_MINUTES = { 5, 10, 15, 30, 45 }
-local BORDER_BEFORE, BORDER_AFTER, TRANSFER_SETTLE = 10, 2, 2
+local BORDER_BEFORE, BORDER_AFTER, TRANSFER_SETTLE, SIGHTINGS_HELD = 10, 2, 2, 3
 local NOT_FOUND_FOR, OFFLINE_FOR, GATE_MAX, GATE_AGE = 30, 1800, 256, 300
 local BOOK_DAYS, BOOK_MAX, PARTY_SIZE, RAID_SIZE, MAP_CLIMB = 7, 300, 4, 40, 10
 local CHANNEL_DELAY, JOIN_TIMEOUT, LOW_SLOTS, RELOCATE_AFTER = 10, 10, 5, 30
@@ -659,11 +658,11 @@ router:SetScript("OnEvent", function(_, _, prefix, text, chatType, sender)
   if not key or key == LA.MyKey() then return end
   offlineAt[key] = nil
   LA.Stats.Heard(net.id, key)
+  LA.Layers.Reach(key, net.id)
   LA.Call(net, "OnAddon", prefix, LA.Safe(text), LA.Safe(chatType), sender, key)
 end)
 
 local tokens = {}
-local labelEpoch, label
 
 function LA.LayerEpoch() return LA.char.epoch end
 
@@ -676,18 +675,11 @@ function LA.LayerToken(netId)
   return token.value
 end
 
-function LA.Label()
-  local epoch = LA.LayerEpoch()
-  if epoch ~= labelEpoch then
-    local i = epoch % #LETTERS + 1
-    labelEpoch, label = epoch, "Layer " .. LETTERS:sub(i, i)
-  end
-  return label
-end
-
 function LA.Moved(why)
-  LA.char.epoch = LA.LayerEpoch() + 1
-  LA.Log("moved", why, LA.Label())
+  local before = LA.LayerEpoch()
+  LA.char.epoch = before + 1
+  LA.Layers.Moved(before)
+  LA.Log("moved", why, (LA.Layers.Label()))
   if LA.Setting("sound") then PlaySound(SOUNDKIT.READY_CHECK) end
   LA.Refresh()
 end
@@ -790,8 +782,8 @@ end
 local flash = { untilAt = 0 }
 local refreshAt, offBy
 
-function LA.Flash(text, notice, seconds)
-  flash.text, flash.untilAt = text, GetTime() + (seconds or FLASH_FOR)
+function LA.Flash(text, notice, seconds, tone)
+  flash.text, flash.untilAt, flash.tone = text, GetTime() + (seconds or FLASH_FOR), tone or "fail"
   flash.notice = notice and { text = notice, tone = "warn" } or nil
   LA.Refresh()
 end
@@ -802,7 +794,7 @@ local function confirmRefresh() C_PlayerInteractionManager.ShardTransferConfirm(
 
 local REFRESH_NOTICE = { text = "", tone = "warn", buttons = { { text = "Refresh now", onClick = confirmRefresh } } }
 
-local function clock(sec)
+function LA.Clock(sec)
   sec = math.max(0, math.floor(sec + 0.5))
   return string.format("%d:%02d", math.floor(sec / MINUTE), sec % MINUTE)
 end
@@ -810,14 +802,16 @@ end
 local view = {}
 
 local function resetView(v)
-  v.label, v.help = LA.Label(), LA.Setting("help") and true or false
+  v.label, v.back = LA.Layers.Label()
+  v.help = LA.Setting("help") and true or false
   v.status, v.tone, v.border, v.notice = nil, "idle", "neutral", nil
   v.swapText, v.swapEnabled = "Swap", true
 end
 
 local function idleView(v, now)
   if now < flash.untilAt then
-    v.status, v.tone, v.border, v.notice = flash.text, "fail", "fail", flash.notice
+    v.status, v.tone, v.notice = flash.text, flash.tone, flash.notice
+    v.border = flash.tone == "fail" and "fail" or "neutral"
     return LA.WakeIn(flash.untilAt - now)
   end
   local left = LA.Limit.Left()
@@ -828,7 +822,7 @@ local function idleView(v, now)
   end
   if refreshAt and refreshAt > now then
     local remaining = refreshAt - now
-    v.status, v.tone, v.border, v.notice = "Refresh in " .. clock(remaining), "warn", "fail", REFRESH_NOTICE
+    v.status, v.tone, v.border, v.notice = "Refresh in " .. LA.Clock(remaining), "warn", "fail", REFRESH_NOTICE
     return LA.WakeIn((remaining + 0.5) % 1)
   end
   refreshAt = nil
@@ -885,7 +879,8 @@ local function movedBack()
   backWatch = nil
   if not (w and GetTime() < w.untilAt) then return false end
   LA.char.epoch = w.epoch
-  LA.Log("moved", "moved back", LA.Label())
+  LA.Layers.MovedBack(w.epoch)
+  LA.Log("moved", "moved back", (LA.Layers.Label()))
   LA.Flash("Moved back – try again")
   return true
 end
@@ -899,6 +894,7 @@ end
 local function onTransfer()
   local wasRefresh = refreshAt ~= nil
   refreshAt = nil
+  LA.Layers.Hold(SIGHTINGS_HELD)
   if LA.Swap.ClaimsTransfer() then return end
   -- the zone change of a border crossing can arrive after its transfer
   LA.After(TRANSFER_SETTLE, judgeTransfer, GetTime(), wasRefresh)
@@ -951,6 +947,7 @@ local function start()
     print(TITLE .. " off: " .. LA.disabled .. " loaded.")
   else
     for _, net in ipairs(nets) do startNetwork(net) end
+    LA.Layers.Init()
     watchChat()
     watchTransfers()
     LA.Host.Init()
@@ -1002,7 +999,7 @@ end
 
 local function charRecord(guid, name)
   local chars = LA.db.chars
-  local c = chars[guid] or (name and chars[name]) or { epoch = math.random(0, #LETTERS - 1) }
+  local c = chars[guid] or (name and chars[name]) or { epoch = 0 }
   chars[guid] = c
   if name then chars[name] = nil end
   c.moves, c.lockouts, c.learned = c.moves or {}, c.lockouts or {}, c.learned or { window = HOUR }

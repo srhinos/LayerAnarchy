@@ -4,7 +4,7 @@ local Debug = {}
 LA.Debug = Debug
 
 local STATE_EVERY = 2.5
-local LABEL, MOVED_LABEL = "Layer C", "Layer H"
+local LABEL, MOVED_LABEL, NEW_LABEL, BACK = "Layer C", "Layer H", "Layer F?", "· back after 4m"
 local HOST, GUEST = "Bram Holloway", "Ines Calder"
 local ASK, SEARCH = { text = "Ask AutoLayer" }, { text = "Search more" }
 local RESET_NOTICE = { text = "Reset in ~45m", tone = "warn" }
@@ -31,6 +31,8 @@ end
 
 local STATES = {
   { status = "Hosting" },
+  { status = "Hosting", label = NEW_LABEL },
+  { status = "Layer F was B", label = "Layer B", back = BACK },
   { status = "Host off", tone = "off", help = false },
   waiting("Paused (flying)"),
   waiting("Paused (in group)"),
@@ -54,6 +56,10 @@ local STATES = {
   failed("Removed by " .. HOST .. " – retrying", "Stop"),
   failed("Group ended – retrying", "Stop"),
   failed("Moved back – try again"),
+  swapping("Asking Layer B – 2/3"),
+  failed("Skipped by 2 – ready in 0:41"),
+  failed("No Layer D host answered"),
+  failed("Landed on Layer C"),
   failed("Refused – 16 this hour", nil, RESET_NOTICE),
   failed("In a group"),
   failed("In an instance"),
@@ -80,6 +86,14 @@ local FAKE = {
   },
 }
 
+local LAYERS = {
+  { name = LABEL, when = "now", hosts = "you are here", here = true },
+  { name = "Layer B", when = "4m ago", hosts = "3 hosts · ", state = "ready", ready = true, enabled = true },
+  { name = "Layer A", when = "1m ago", hosts = "2 hosts · ", state = "0:41", enabled = true },
+  { name = "Layer D", when = "12m ago", hosts = "1 host · ", state = "ready", ready = true, enabled = true },
+  { name = "Layer E", when = "40m ago", hosts = "no hosts known" },
+}
+
 local ticker, step, faking = nil, 1, false
 local fakeStats = {}
 
@@ -100,12 +114,14 @@ function Debug.Previewing() return ticker ~= nil end
 
 function Debug.Fill(v)
   if not ticker then return false end
-  v.label, v.help = LABEL, true
+  v.label, v.back, v.help = LABEL, nil, true
   for key, value in pairs(STATES[step]) do v[key] = value end
   return true
 end
 
 function Debug.Stats() return faking and fakeStats or nil end
+
+function Debug.Layers() return ticker and LAYERS or nil end
 
 function Debug.ToggleStates()
   if ticker then

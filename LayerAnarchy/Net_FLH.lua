@@ -136,7 +136,7 @@ local function avoided(key) return avoid[key] == LA.LayerEpoch() end
 
 local function candidate(st, key, p, t, hostsOnly)
   return p.n and p.m and p.k and t - p.t <= LIVE and not st.tried[key] and (not hostsOnly or p.h == 1)
-    and not avoided(key) and LA.ZoneOf(p.m) == st.zone
+    and not avoided(key) and LA.ZoneOf(p.m) == st.zone and (not st.only or st.only[key])
 end
 
 local function pick(st, hostsOnly)
@@ -198,9 +198,9 @@ nextStep = function(st)
   if not live(st) or st.req or st.waiting or st.tries >= MAX_TRIES then return end
   local best, bo = bestOffer(st)
   if best then return tryHost(st, best, bo) end
-  local hosts = pick(st, true)
+  local hosts = pick(st, not st.only)
   if hosts[1] then return tryHost(st, hosts[1]) end
-  if not st.lqId then broadcastLQ(st) end
+  if not (st.lqId or st.only) then broadcastLQ(st) end
 end
 
 local function poke() if cur then nextStep(cur) end end
@@ -376,10 +376,27 @@ function NET.OnAddon(_, _, text, chatType, sender, key)
   if handler then handler(split(text), chatType, key, sender) end
 end
 
+local function newState(ask)
+  cur = { ask = ask, zone = ask.zone, gen = 0, tries = 0, tried = {}, offers = {}, offered = {}, lqTo = {} }
+  return cur
+end
+
 function NET.Ask(_, ask)
   if not ask.zone then return end
-  cur = { ask = ask, zone = ask.zone, gen = 0, tries = 0, tried = {}, offers = {}, offered = {}, lqTo = {} }
-  nextStep(cur)
+  nextStep(newState(ask))
+end
+
+function NET.Target(_, ask, names)
+  if not ask.zone then return 0 end
+  local st = newState(ask)
+  st.only = {}
+  for _, name in ipairs(names) do
+    local key = LA.NameKey(name)
+    if key then st.only[key] = true end
+  end
+  local n = #pick(st, false)
+  nextStep(st)
+  return n
 end
 
 function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur = nil end end

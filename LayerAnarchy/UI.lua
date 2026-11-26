@@ -13,7 +13,7 @@ local NARROW = LATIN[GetLocale()] and "Fonts\\ARIALN.TTF" or STANDARD_TEXT_FONT
 local W, PAD, GAP, ROW, HOST_W, ANCHORED_W = 244, 8, 4, 22, 72, 10
 local LINE1_TOP, LINE1_H, LINE_GAP, LINE2_H, ROW_GAP = 8, 18, 3, 15, 9
 local BASE_H = LINE1_TOP + LINE1_H + LINE_GAP + LINE2_H + ROW_GAP + ROW + PAD
-local GLYPH_BTN, GLYPH_INSET, GLYPH_TEXT_GAP, BUTTON_INSET, DEFAULT_Y = 18, 3, 2, 3, 200
+local GLYPH_BTN, GLYPH_INSET, BUTTON_INSET, DEFAULT_Y = 18, 3, 3, 200
 local REST_ALPHA, SEP_H, SEP_GAP = 0.45, 14, 3
 local CORNER_X, CORNER_Y = PAD - GLYPH_INSET, -7
 local NOTE_TOP, NOTE_TEXT_TOP, NOTE_TEXT_H, NOTE_GAP = 8, 7, 14, 5
@@ -30,7 +30,12 @@ local HUD_TEXT_TOP, HUD_LINE_GAP, HUD_WIDTH_STEP = 7, 3, 8
 local COG_SIZE, MINI_SIZE, CLOSE_SIZE = 13, 12, 13
 local SIZE = {
   line1 = 16, line2 = 13, button = 11, title = 11, option = 10, infinity = 16,
-  note = 12, hud = 12, stat = 11, caption = 9, seg = 10,
+  note = 12, hud = 12, stat = 11, caption = 9, seg = 10, chevron = 11, back = 11, layer = 11, layerSub = 10, foot = 9.5,
+}
+local LIST = {
+  NAME = "LayerAnarchyLayers", W = 176, ROW_H = 34, ROW_TOP = 5, WHEN_TOP = 6, LINE_GAP = 3,
+  FOOT_GAP = 4, FOOT_TOP = 5, FOOT_H = 24, CHEVRON_W = 5, CHEVRON_GAP = 4, BACK_GAP = 2, TITLE_PAD = 3, TICK = 1,
+  READY = "|cff5fd88a", WAIT = "|cfff0a64a", FOOT = "Hosts skip you for about a minute after they invite you.",
 }
 local CROSS, PLUS = { 45, -45 }, { 0, 90 }
 local MAX_INVITES, SCALE_MIN, SCALE_MAX, SCALE_STEP = 100, 0.7, 1.5, 0.05
@@ -45,7 +50,7 @@ local C = {
   hover = { 1, 1, 1, 0.07 }, text = rgb("e6e6e6"), white = rgb("f2f2f2"), bright = rgb("ffffff"),
   note = rgb("d9d9d9"), dim = rgb("76787e"), value = rgb("cfcfcf"), muted = rgb("8d8f95"), faint = rgb("5c5f66"),
   gold = rgb("e8cc6a"), green = rgb("5fd88a"), amber = rgb("f0a64a"), grey = rgb("9a9a9a"), soft = rgb("b9b9b4"),
-  shadow = { 0, 0, 0, 0.8 },
+  shadow = { 0, 0, 0, 0.8 }, goldHot = rgb("ffe38a"), rule = rgb("2b2c31"), busy = rgb("5fd88a", 0.08),
 }
 local TONE = { idle = C.soft, swap = C.green, fail = C.amber, host = C.gold, off = C.dim, warn = C.amber }
 local BORDER = { neutral = rgb("4a4c52"), swap = rgb("3fbf6a"), fail = rgb("e0912e"), host = rgb("d8b84a") }
@@ -69,7 +74,7 @@ local root, box, hud, note, driver
 local sliders, skinned, hairs, rows = {}, {}, {}, {}
 local netRows, gridRows, segs = {}, {}, {}
 local drawers, toggles, revealed, dimmed = {}, {}, {}, {}
-local placed, pad = {}, { listed = false, focused = false }
+local placed, pad, layers = {}, { listed = false, focused = false }, {}
 local open, current
 
 local function fontString(parent, font, size, c)
@@ -240,6 +245,7 @@ local function place()
   end
   thinEdges()
   if open then placeDrawer(open) end
+  if layers.panel:IsShown() then layers.Place() end
 end
 
 local function dragStart(f)
@@ -647,6 +653,175 @@ local function buildNetwork()
   d:HookScript("OnHide", function() LA.Stats.Watch(false) end)
 end
 
+function layers.Title(parent)
+  local t = CreateFrame("Button", nil, parent)
+  t:SetPoint("TOPLEFT", PAD, -LINE1_TOP)
+  t:SetHeight(LINE1_H)
+  t.chevron = fontString(t, NARROW, SIZE.chevron, C.grey)
+  t.chevron:SetPoint("LEFT")
+  setText(t.chevron, "‹")
+  t.chevron:Hide()
+  t.text = fontString(t, FONT, SIZE.line1, C.gold)
+  t.text:SetPoint("LEFT", LIST.CHEVRON_W + LIST.CHEVRON_GAP, 0)
+  t.back = fontString(parent, NARROW, SIZE.back, C.soft)
+  t.back:SetPoint("LEFT", t, "RIGHT", LIST.BACK_GAP, 0)
+  t:RegisterForDrag("LeftButton")
+  t:SetScript("OnDragStart", function() dragStart(parent) end)
+  t:SetScript("OnDragStop", function() dragStop(parent) end)
+  t:SetScript("OnMouseDown", function() parent.moved = nil end)
+  t:SetScript("OnClick", function()
+    if not parent.moved then layers.Toggle() end
+  end)
+  t:SetScript("OnEnter", function() layers.Hover(true) end)
+  t:SetScript("OnLeave", function() layers.Hover(false) end)
+  layers.title = t
+  return t
+end
+
+function layers.DrawTitle(v)
+  local t = layers.title
+  if setText(t.text, v.label) then
+    t:SetWidth(LIST.CHEVRON_W + LIST.CHEVRON_GAP + t.text:GetUnboundedStringWidth() + LIST.TITLE_PAD)
+  end
+  setText(t.back, v.back or "")
+end
+
+function layers.Hover(hot)
+  if hot ~= nil then layers.hot = hot end
+  local on = layers.hot or layers.panel:IsShown()
+  layers.title.chevron:SetShown(on)
+  tint(layers.title.text, on and C.goldHot or C.gold)
+end
+
+function layers.Place()
+  local p = layers.panel
+  local left = box:GetScaledRect()
+  p:ClearAllPoints()
+  if left >= (LIST.W + GAP) * box:GetEffectiveScale() then
+    p:SetPoint("TOPRIGHT", box, "TOPLEFT", -GAP, 0)
+  else
+    p:SetPoint("TOPLEFT", box, "TOPRIGHT", GAP, 0)
+  end
+end
+
+function layers.Pick(r) if r.rec then LA.SwapTo(r.rec) end end
+
+function layers.Row(i)
+  local r = layers.rows[i]
+  if r then return r end
+  local y = HEAD_TOP + HEAD_H + (i - 1) * LIST.ROW_H
+  r = CreateFrame("Button", nil, layers.panel)
+  r:SetHeight(LIST.ROW_H)
+  r:SetPoint("TOPLEFT", DRAWER_INSET, -y)
+  r:SetPoint("TOPRIGHT", -DRAWER_INSET, -y)
+  solid(r, "HIGHLIGHT", C.hover):SetAllPoints()
+  r.busy = solid(r, "BACKGROUND", C.busy)
+  r.busy:SetAllPoints()
+  local rule = solid(r, "ARTWORK", C.rule)
+  rule:SetPoint("TOPLEFT"); rule:SetPoint("TOPRIGHT")
+  hairs[#hairs + 1] = rule
+  r.name = fontString(r, FONT, SIZE.layer, C.gold)
+  r.name:SetPoint("TOPLEFT", ROW_INSET, -LIST.ROW_TOP)
+  r.when = fontString(r, NARROW, SIZE.layerSub, C.soft)
+  r.when:SetJustifyH("RIGHT")
+  r.when:SetPoint("TOPRIGHT", -ROW_INSET, -LIST.WHEN_TOP)
+  r.sub = fontString(r, NARROW, SIZE.layerSub, C.grey)
+  r.sub:SetPoint("TOPLEFT", r.name, "BOTTOMLEFT", 0, -LIST.LINE_GAP)
+  r:SetScript("OnClick", layers.Pick)
+  layers.rows[i] = r
+  thinEdges()
+  return r
+end
+
+function layers.Draw(r, row)
+  r.rec = row.rec
+  setText(r.name, row.name)
+  tint(r.name, row.here and C.soft or C.gold)
+  setText(r.when, row.when)
+  setText(r.sub, row.state and (row.hosts .. (row.ready and LIST.READY or LIST.WAIT) .. row.state .. "|r") or row.hosts)
+  tint(r.sub, row.state and C.grey or C.dim)
+  r.busy:SetShown(row.busy or false)
+  local on = row.enabled or false
+  if r.on ~= on then
+    r.on = on
+    r:SetEnabled(on)
+  end
+  r:Show()
+end
+
+function layers.Fit()
+  local p, y = layers.panel, HEAD_TOP + HEAD_H + layers.count * LIST.ROW_H + LIST.FOOT_GAP
+  p.rule:ClearAllPoints()
+  p.rule:SetPoint("TOPLEFT", DRAWER_INSET, -y)
+  p.rule:SetPoint("TOPRIGHT", -DRAWER_INSET, -y)
+  p.foot:ClearAllPoints()
+  p.foot:SetPoint("TOPLEFT", DRAWER_INSET + ROW_INSET, -(y + LIST.FOOT_TOP))
+  p:SetHeight(y + LIST.FOOT_TOP + LIST.FOOT_H + DRAWER_BOTTOM)
+end
+
+function layers.Sync()
+  if not layers.panel:IsShown() then return end
+  local list = LA.Debug.Layers() or LA.Layers.List()
+  for i, row in ipairs(list) do layers.Draw(layers.Row(i), row) end
+  for i = #list + 1, #layers.rows do layers.rows[i]:Hide() end
+  if layers.count ~= #list then
+    layers.count = #list
+    layers.Fit()
+  end
+end
+
+function layers.Toggle()
+  local p = layers.panel
+  if p:IsShown() then return p:Hide() end
+  layers.Place()
+  p:Show()
+end
+
+function layers.Shown()
+  layers.Sync()
+  layers.ticker = layers.ticker or C_Timer.NewTicker(LIST.TICK, layers.tick)
+  layers.Hover()
+  queueSync()
+end
+
+function layers.Hidden()
+  layers.panel:Hide()
+  if layers.ticker then
+    layers.ticker:Cancel()
+    layers.ticker = nil
+  end
+  layers.Hover()
+  queueSync()
+end
+
+function layers.Build()
+  local p = CreateFrame("Frame", LIST.NAME, box)
+  p:EnableMouse(true)
+  p:SetClampedToScreen(true)
+  p:Hide()
+  p:SetFrameLevel(box:GetFrameLevel() + DRAWER_LEVEL)
+  p:SetWidth(LIST.W)
+  skin(p, C.bg, BORDER.neutral)
+  tinsert(UISpecialFrames, LIST.NAME)
+  local head = CreateFrame("Frame", nil, p)
+  head:SetHeight(HEAD_H)
+  head:SetPoint("TOPLEFT", DRAWER_INSET, -HEAD_TOP)
+  head:SetPoint("TOPRIGHT", -DRAWER_INSET, -HEAD_TOP)
+  label(head, FONT, SIZE.title, C.value, "Layers here")
+  glyphButton(head, function() p:Hide() end, icon(CLOSE_SIZE, ICON.minus, CROSS)):SetPoint("RIGHT")
+  p.rule = solid(p, "ARTWORK", C.rule)
+  hairs[#hairs + 1] = p.rule
+  p.foot = fontString(p, NARROW, SIZE.foot, C.dim)
+  p.foot:SetWordWrap(true)
+  p.foot:SetJustifyV("TOP")
+  p.foot:SetSize(LIST.W - 2 * (DRAWER_INSET + ROW_INSET), LIST.FOOT_H)
+  setText(p.foot, LIST.FOOT)
+  layers.panel, layers.rows, layers.count, layers.tick = p, {}, -1, LA.Guard("ui", layers.Sync)
+  p:SetScript("OnShow", layers.Shown)
+  p:SetScript("OnHide", layers.Hidden)
+  thinEdges()
+end
+
 local function buildNote()
   note = CreateFrame("Frame", nil, box)
   note:SetPoint("TOPLEFT", box.line2, "BOTTOMLEFT", 0, -NOTE_TOP)
@@ -683,10 +858,7 @@ local function buildBox()
   bars:SetPoint("RIGHT", cog, "LEFT")
   revealed[1], revealed[2], revealed[3], dimmed[1] = bars, cog, sep, mini
 
-  box.line1 = fontString(box, FONT, SIZE.line1, C.gold)
-  box.line1:SetPoint("TOPLEFT", PAD, -LINE1_TOP)
-  box.line1:SetPoint("RIGHT", mini, "LEFT", -GLYPH_TEXT_GAP, 0)
-  box.line1:SetHeight(LINE1_H)
+  box.line1 = layers.Title(box)
   box.line2 = fontString(box, NARROW, SIZE.line2, TONE.idle)
   box.line2:SetPoint("TOPLEFT", box.line1, "BOTTOMLEFT", 0, -LINE_GAP)
   box.line2:SetPoint("RIGHT", box, "RIGHT", -PAD, 0)
@@ -703,7 +875,7 @@ local function buildBox()
 
   box.help, box.swap, box.mini = help, swap, mini
   buildNote()
-  for _, f in ipairs({ box, mini, cog, bars, help, swap }) do watchHover(f) end
+  for _, f in ipairs({ box, mini, cog, bars, help, swap, box.line1 }) do watchHover(f) end
   applyHover()
 end
 
@@ -763,7 +935,7 @@ local function drawNotice(n)
 end
 
 local function drawBox(v)
-  setText(box.line1, v.label)
+  layers.DrawTitle(v)
   setText(box.line2, v.status)
   tint(box.line2, TONE[v.tone])
   setEdge(box, BORDER[v.border])
@@ -854,7 +1026,7 @@ end
 
 function pad.Cursor()
   if not ConsolePort then return end
-  local want = open ~= nil or (note.count > 0 and note:IsVisible())
+  local want = open ~= nil or layers.panel:IsShown() or (note.count > 0 and note:IsVisible())
   if want == pad.cursor then return end
   -- starts unknown: ConsolePort saves its cursor frames, so the first pass clears one left by a reload
   pad.cursor = want
@@ -874,6 +1046,8 @@ end
 function pad.Close()
   if open then
     closeDrawer()
+  elseif layers.panel:IsShown() then
+    layers.panel:Hide()
   else
     pad.release = true
     queueSync()
@@ -920,6 +1094,7 @@ function UI.Refresh()
   box:SetShown(current == box)
   hud:SetShown(current == hud)
   if open then open.sync() end
+  layers.Sync()
   if pad.listed or ConsolePort or current ~= was then queueSync() end
 end
 
@@ -946,6 +1121,7 @@ function UI.Init()
   buildHud()
   buildOptions()
   buildNetwork()
+  layers.Build()
   LA.On("UI_SCALE_CHANGED", place)
   LA.On("DISPLAY_SIZE_CHANGED", place)
   LA.On("PLAYER_REGEN_DISABLED", pad.Leave)

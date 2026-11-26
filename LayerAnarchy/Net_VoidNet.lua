@@ -446,7 +446,7 @@ local function onA(text, sender, key)
   local zone, p, h = text:match("^A:1:(%d+):(%d+%-%d+):([01])$")
   zone = tonumber(zone)
   local st = cur
-  if not zone or #p > PAIR_MAX or h ~= "1" or not live(st) then return end
+  if not zone or #p > PAIR_MAX or h ~= "1" or not live(st) or (st.only and not st.only[key]) then return end
   if zone ~= st.zone or not st.lastQ or GetTime() - st.lastQ > A_WINDOW then return end
   census[key] = { name = sender, zone = zone, pair = p, t = GetTime() }
   book:Remember(sender)
@@ -556,14 +556,19 @@ function NET.OnAddon(_, prefix, text, chatType, sender, key)
   if handler then handler(text, sender, key) end
 end
 
-function NET.Ask(_, ask)
-  local zone = ask.zone
-  if not zone then return end
+local function newState(ask)
   local st = {
-    ask = ask, zone = zone, nonce = newNonce(),
+    ask = ask, zone = ask.zone, nonce = newNonce(),
     queue = {}, queued = {}, tried = {}, nonces = {}, asked = {},
   }
   cur = st
+  return st
+end
+
+function NET.Ask(_, ask)
+  local zone = ask.zone
+  if not zone then return end
+  local st = newState(ask)
   local t = GetTime()
   for key, c in pairs(census) do
     if c.zone == zone and t - c.t <= CENSUS_HOST then enqueue(st, key) end
@@ -571,6 +576,27 @@ function NET.Ask(_, ask)
   tryNext()
   wave(st)
   if t - roster.at > ROSTER_FRESH then readRoster(function(ok) if ok then wave(st) end end) end
+end
+
+function NET.Target(_, ask, names)
+  local me = LA.Me()
+  if not (ask.zone and validName(me)) then return 0 end
+  local st, t = newState(ask), GetTime()
+  st.only, st.lastQ = {}, t
+  local text = ("Q:1:1:%d:%s:%s"):format(st.zone, st.nonce, me)
+  for _, name in ipairs(names) do
+    local key = LA.NameKey(name)
+    if key and not LA.Offline(key) then
+      st.only[key], st.asked[key] = true, true
+      st.ask.Asked(name)
+      send(VL, text, name, true, Q_TTL)
+      if freshHost(st, key, t) then enqueue(st, key) end
+    end
+  end
+  tryNext()
+  local n = 0
+  for _ in pairs(st.only) do n = n + 1 end
+  return n
 end
 
 function NET.Round(_, ask)

@@ -298,9 +298,11 @@ local function onHeard(sender, key, asker, layer, zone, flag)
   zone = tonumber(zone)
   local real = #layer <= LAYER_ID_MAX and layer:match("^%d+%-%d+$") ~= nil
   book:Remember(sender, { zone = zone, host = real and (flag == "h" or flag == "s") })
+  LA.Layers.Reading(sender, real and layer or nil, zone)
   local st = cur
   if not (real and live(st)) then return end
   st.replies[key] = { layer = layer, zone = zone }
+  if flag == "s" then st.ask.Skipped(sender) end
   if flag == "h" and layer ~= st.notId then
     st.ask.Offer(sender, NET.id)
     progress(st)
@@ -363,13 +365,28 @@ function NET.OnAddon(_, _, text, chatType, sender, key)
   if whispered and text == "same" then onSame(sender) end
 end
 
-function NET.Ask(_, ask)
-  local zone = ask.zone
-  if not zone then return end
-  local st = { ask = ask, zone = zone, notId = ourId(), queue = {}, seen = {}, i = 1, replies = {}, searching = true }
-  st.line = request(zone, st.notId)
+local function newState(ask)
+  local st = { ask = ask, zone = ask.zone, notId = ourId(), queue = {}, seen = {}, i = 1, replies = {} }
+  st.line = request(st.zone, st.notId)
   cur = st
-  LA.Who(zone, function(names) searched(st, names) end)
+  return st
+end
+
+function NET.Ask(_, ask)
+  if not ask.zone then return end
+  local st = newState(ask)
+  st.searching = true
+  LA.Who(st.zone, function(names) searched(st, names) end)
+end
+
+function NET.Target(_, ask, names)
+  if not ask.zone then return 0 end
+  local reachable = {}
+  for _, name in ipairs(names) do
+    if not LA.Offline(LA.NameKey(name)) then reachable[#reachable + 1] = name end
+  end
+  newBatch(newState(ask), reachable)
+  return #reachable
 end
 
 function NET.Round(_, ask)

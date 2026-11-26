@@ -9,6 +9,7 @@
 ## SavedVariables: LayerAnarchyDB
 
 Core.lua
+Layers.lua
 Stats.lua
 Debug.lua
 Host.lua

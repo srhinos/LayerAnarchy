@@ -3,7 +3,7 @@ local _, LA = ...
 local Swap = {}
 LA.Swap = Swap
 
-local ROUND_EVERY, AUTOLAYER_AFTER, END_AFTER, SAFETY_CAP = 6, 12, 15, 120
+local ROUND_EVERY, AUTOLAYER_AFTER, END_AFTER, TARGET_WAIT, SAFETY_CAP = 6, 12, 15, 8, 120
 local JOIN_WAIT, VERDICT_AFTER, LEAVE_AFTER, MOVED_BACK_WATCH, SETTLE_MARGIN = 10, 3, 3, 6, 3
 local NOTE_FOR, LATE_FOR, SYSTEM_FRESH, BLOCKED_FLASH, STALE_SWAP = 6, 90, 3, 4, 120
 local HOUR = 3600
@@ -88,13 +88,15 @@ local armEnd
 local function endAt(s)
   local cap = math.max(s.started + SAFETY_CAP, s.anyUntil or 0)
   if not s.exhausted then return cap end
-  return math.min(cap, math.max(s.activeAt + END_AFTER, s.anyUntil or 0))
+  return math.min(cap, math.max(s.activeAt + (s.target and TARGET_WAIT or END_AFTER), s.anyUntil or 0))
 end
+
+local function unanswered(s) return "No Layer " .. s.target.letter .. " host answered" end
 
 local function checkEnd(s)
   if cur ~= s or s.phase ~= "asking" or s.fallback == "prefilled" then return end
   if endAt(s) > GetTime() then return armEnd(s) end
-  finish("timeout", "No hosts found")
+  finish("timeout", s.target and unanswered(s) or "No hosts found")
 end
 
 armEnd = function(s)
@@ -117,13 +119,14 @@ local function round(s)
 end
 
 armRound = function(s)
+  if s.target then return end
   if s.roundTimer then s.roundTimer:Cancel() end
   s.exhausted = false
   s.roundTimer = LA.After(ROUND_EVERY, round, s)
 end
 
 local function tryFallback(s, due)
-  if cur ~= s or s.fallback or s.phase ~= "asking" then return end
+  if cur ~= s or s.fallback or s.phase ~= "asking" or s.target then return end
   if (not due and GetTime() - s.started < AUTOLAYER_AFTER) or not LA.Setting("askAutoLayer") then return end
   if LA.Each("Fallback", s) then
     s.fallback = "offered"
@@ -184,11 +187,21 @@ local function retry(why, note)
   LA.Refresh()
 end
 
-local function newAsk()
+local function skippedOut(s)
+  local wait
+  for key in pairs(s.skips) do
+    local left = LA.Layers.SkipLeft(key)
+    wait = math.min(wait or left, left)
+  end
+  finish("skipped", "Skipped by " .. s.skipped .. " – ready in " .. LA.Clock(wait))
+end
+
+local function newAsk(target)
   local t = GetTime()
   local s = {
-    active = true, phase = "asking", started = t, activeAt = t, phaseAt = t, exhausted = false,
+    active = true, phase = "asking", started = t, activeAt = t, phaseAt = t, exhausted = target ~= nil, target = target,
     zone = LA.ZoneMapID(), asked = {}, askedCount = 0, offers = {}, refused = {}, found = 0, joins = 0, progress = {},
+    skips = {}, skipped = 0,
   }
   function s.Asked(name)
     local key = LA.NameKey(name)
@@ -226,19 +239,49 @@ local function newAsk()
     s.anyUntil = GetTime() + seconds
     armEnd(s)
   end
+  function s.Skipped(name)
+    local key = LA.NameKey(name)
+    if not (s.target and key and s.target.keys[key]) or s.skips[key] then return end
+    s.skips[key], s.skipped = true, s.skipped + 1
+    if cur == s and s.phase == "asking" and s.skipped >= s.target.count then skippedOut(s) end
+  end
   return s
+end
+
+local function begin(s)
+  cur = s
+  muteInvites(true)
+  LA.ClearFlash()
 end
 
 function Swap.Start()
   local s = newAsk()
-  cur = s
-  muteInvites(true)
-  LA.ClearFlash()
+  begin(s)
   LA.Log("ask", s.zone, InCombatLockdown() and "combat" or "")
   LA.Each("Ask", s)
   armRound(s)
   armEnd(s)
   LA.After(AUTOLAYER_AFTER, tryFallback, s, true)
+  LA.Refresh()
+end
+
+local function startTargeted(rec)
+  local hosts, letter = LA.Layers.Hosts(rec)
+  if not letter then return end
+  local t = { record = rec, letter = letter, keys = {}, count = 0 }
+  local s, byNet = newAsk(t), {}
+  begin(s)
+  LA.Log("ask", s.zone, "layer " .. letter, #hosts)
+  for _, h in ipairs(hosts) do
+    t.keys[h.key] = true
+    if h.net then
+      byNet[h.net] = byNet[h.net] or {}
+      table.insert(byNet[h.net], h.name)
+    end
+  end
+  for netId, names in pairs(byNet) do t.count = t.count + (LA.Call(LA.Net(netId), "Target", s, names) or 0) end
+  if t.count == 0 then return finish("timeout", unanswered(s)) end
+  armEnd(s)
   LA.Refresh()
 end
 
@@ -256,15 +299,26 @@ function Swap.Stop()
   end
 end
 
+local function blocked()
+  local why = (IsInInstance() and "In an instance") or (IsInGroup() and not LA.Host.Release() and "In a group")
+  if why then LA.Flash(why, nil, BLOCKED_FLASH) end
+  return why
+end
+
 function LA.SwapClick()
   if LA.disabled or LA.Debug.Previewing() then return end
   if cur then return Swap.Stop() end
-  if IsInInstance() then return LA.Flash("In an instance", nil, BLOCKED_FLASH) end
-  if IsInGroup() and not LA.Host.Release() then return LA.Flash("In a group", nil, BLOCKED_FLASH) end
-  Swap.Start()
+  if not blocked() then Swap.Start() end
+end
+
+function LA.SwapTo(rec)
+  if LA.disabled or LA.Debug.Previewing() or cur or blocked() then return end
+  startTargeted(rec)
 end
 
 function Swap.Busy() return cur ~= nil end
+
+function Swap.Target() return cur and cur.target and cur.target.record end
 
 function Swap.ClaimsTransfer() return cur ~= nil and cur.phase == "joined" end
 
@@ -292,7 +346,9 @@ local function askingStatus(s, v)
     v.status, v.tone, v.border = s.note, "fail", "fail"
     return LA.WakeIn(s.noteUntil - GetTime())
   end
-  if s.fallback == "prefilled" then
+  if s.target then
+    v.status = "Asking Layer " .. s.target.letter .. " – " .. asked .. "/" .. s.target.count
+  elseif s.fallback == "prefilled" then
     v.status, v.tone, v.border = "Press " .. LA.UI.SendKey() .. " to send", "warn", "fail"
   elseif queued == 0 then
     v.status = "Searching (" .. s.found .. " found)"
@@ -348,6 +404,8 @@ local function checkJoin(s, phaseAt)
 end
 
 local function wanted(s, key, friend)
+  local t = s.target
+  if t then return t.keys[key] and LA.Layers.Trusted(t.record, key) end
   if s.offers[key] then return true end
   return not friend and (s.asked[key] or (s.anyUntil and GetTime() < s.anyUntil))
 end
@@ -393,7 +451,11 @@ end
 local function onInvite(_, name, _, _, _, _, isCrossShard, _, inviterGUID)
   name = LA.Safe(name)
   local key = LA.NameKey(name)
-  if key and not handled(name, key, social(inviterGUID), LA.Safe(isCrossShard) == false) then ring() end
+  if not key then return end
+  local sameShard = LA.Safe(isCrossShard) == false
+  local ours = handled(name, key, social(inviterGUID), sameShard)
+  LA.Layers.Invited(name, sameShard)
+  if not ours then ring() end
 end
 
 local function onInviteCancelled() if cur and cur.phase == "invited" then retry("ended") end end
@@ -434,6 +496,7 @@ local function onTransfer()
   LA.Limit.Moved()
   s.epochBefore = LA.LayerEpoch()
   LA.Moved("swap")
+  LA.Layers.Landed(s.host, s.target and s.target.record)
   LA.WatchMoveBack(s.epochBefore, LEAVE_AFTER + MOVED_BACK_WATCH + SETTLE_MARGIN)
   if LA.Setting("auto") then
     s.leaveAt = GetTime() + LEAVE_AFTER
