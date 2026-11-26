@@ -399,7 +399,7 @@ local function wave(st, first)
   local me = LA.Me()
   if not validName(me) then return end
   local targets = pick(FANOUT, st.asked)
-  if #targets == 0 then return st.ask.Progress(NET.id, 0, 0, false) end
+  if #targets == 0 then return st.ask.Progress(NET.id, st.sent, st.sent, false) end
   st.waves, st.lastQ = st.waves + 1, GetTime()
   local text = ("Q:1:1:%d:%s:%s"):format(st.zone, st.nonce, me)
   for _, name in ipairs(targets) do
@@ -411,7 +411,9 @@ local function wave(st, first)
       send(VL, text, name, false, Q_TTL)
     end
   end
-  st.ask.Progress(NET.id, 0, 0, st.waves < WAVES)
+  st.sent = st.sent + #targets
+  LA.Log("vn-wave", st.waves, #targets)
+  st.ask.Progress(NET.id, st.sent, st.sent, st.waves < WAVES and #targets == FANOUT)
 end
 
 local function relay(zone, nonce, asker, exclude)
@@ -553,7 +555,7 @@ function NET.Ask(_, ask)
   local zone = ask.zone
   if not zone then return end
   local st = {
-    ask = ask, zone = zone, nonce = newNonce(), waves = 0,
+    ask = ask, zone = zone, nonce = newNonce(), waves = 0, sent = 0,
     queue = {}, queued = {}, tried = {}, nonces = {}, asked = {},
   }
   cur = st

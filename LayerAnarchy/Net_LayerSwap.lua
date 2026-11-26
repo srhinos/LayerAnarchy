@@ -102,8 +102,9 @@ onWhoList = function()
   if not p then return end
   if p.late then return closeWho(p) end
   local num, total = C_FriendList.GetNumWhoResults()
-  num = LA.Safe(num) or 0
-  advanceRound(num, LA.Safe(total) or num)
+  num, total = LA.Safe(num) or 0, LA.Safe(total) or 0
+  LA.Log("who-result", num, total)
+  advanceRound(num, total)
   whoDone(p, whoNames(num, p.zoneName))
 end
 
@@ -210,7 +211,13 @@ end
 
 local function live(st) return st ~= nil and cur == st and not st.stopped and st.ask.active end
 
-local function progress(st) st.ask.Progress(NET.id, st.i - 1, #st.queue, st.more) end
+local function cooldownLeft() return who.sentAt and who.sentAt + WHO_GAP - GetTime() or 0 end
+
+local function progress(st)
+  local wait = cooldownLeft()
+  if st.more and wait > 0 then LA.After(wait, progress, st) end
+  st.ask.Progress(NET.id, st.i - 1, #st.queue, st.more and wait <= 0)
+end
 
 local function round(st)
   if not live(st) then return end
@@ -334,7 +341,7 @@ end
 
 function NET.More(_, ask)
   local st = cur
-  if not (live(st) and st.ask == ask) then return end
+  if not (live(st) and st.ask == ask and st.more) then return end
   who.last = nil
   LA.Who(st.zone, function(names, why)
     if not live(st) or why == "cooldown" then return end

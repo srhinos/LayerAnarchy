@@ -267,7 +267,7 @@ local function askingStatus(s, v)
     v.status = "Asking " .. sent .. "/" .. total .. " – " .. s.found .. " found"
     return
   end
-  v.status = "Searching (" .. s.found .. " found)"
+  v.status = sent == 0 and "Searching (" .. s.found .. " found)" or "Asked " .. sent .. " – " .. s.found .. " found"
   if more then v.swapText = "Ask more" end
 end
 
