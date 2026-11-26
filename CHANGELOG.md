@@ -1,5 +1,9 @@
 # Layer Anarchy
 
+## 0.2.2
+
+- Optional minimap button, off by default: turn it on under the cog's options. Click shows or hides the window; drag it around the minimap's edge. It's a standard LibDBIcon button, so button collectors like HidingBar pick it up.
+
 ## 0.2.1
 
 - The nameplate flash while the layer shows "?" is now a single blink half a second after you phase, instead of a second-long flash repeated every 10 seconds.

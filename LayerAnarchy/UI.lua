@@ -63,6 +63,7 @@ local OPTIONS = {
   { "Sound when moved", "sound" },
   { "Ask AutoLayer hosts too", "askAutoLayer" },
   { "Lock position", "locked" },
+  { "Minimap button", "minimap" },
 }
 local NETWORKS = { { "layerswap", "LayerSwap" }, { "voidnet", "VoidNet" }, { "autolayer", "AutoLayer" }, { "flh", "Layer Hop" } }
 local COLUMNS = { "Seen", "Talking", "Hosts" }
@@ -1055,6 +1056,7 @@ function UI.Refresh()
   hud:SetShown(current == hud)
   if open then open.sync() end
   layers.Sync()
+  LA.MapButton.Sync()
   if pad.listed or ConsolePort or current ~= was then queueSync() end
 end
 

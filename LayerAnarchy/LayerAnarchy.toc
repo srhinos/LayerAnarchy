@@ -8,6 +8,10 @@
 ## X-Wago-ID: bGoYxp60
 ## SavedVariables: LayerAnarchyDB
 
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 Core.lua
 Layers.lua
 Stats.lua
@@ -18,6 +22,7 @@ Net_AutoLayer.lua
 Net_VoidNet.lua
 Net_FLH.lua
 UI.lua
+Minimap.lua
 #@debug@
 Debug.lua
 #@end-debug@

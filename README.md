@@ -29,6 +29,7 @@ I wanted one that talks to all of them and stays out of my way, so I made **Laye
 - **Bars:** how many players each network has, and how your swaps and hosting have gone, for the last hour or the session.
 - **Cog:** options.
 - **Minimize:** a small HUD.
+- **Minimap button:** optional, off by default. Turn it on in the options.
 - **Controller:** bind *Controller focus* to put the controller on the box.
 
 ## Commands
@@ -46,4 +47,4 @@ Layer Anarchy switches itself off if another layer addon that sends or accepts i
 
 ## Source
 
-GPL-3.0, written from scratch. Bugs and ideas go to [GitHub](https://github.com/srhinos/LayerAnarchy).
+GPL-3.0, written from scratch. The bundled libraries (LibStub, CallbackHandler, LibDataBroker, LibDBIcon) keep their own licences. Bugs and ideas go to [GitHub](https://github.com/srhinos/LayerAnarchy).

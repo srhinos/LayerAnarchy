@@ -1,5 +1,11 @@
 package-as: LayerAnarchy
 
+externals:
+  LayerAnarchy/Libs/LibStub: https://repos.wowace.com/wow/libstub/trunk
+  LayerAnarchy/Libs/CallbackHandler-1.0: https://repos.wowace.com/wow/callbackhandler/trunk/CallbackHandler-1.0
+  LayerAnarchy/Libs/LibDataBroker-1.1: https://github.com/tekkub/libdatabroker-1-1
+  LayerAnarchy/Libs/LibDBIcon-1.0: https://repos.wowace.com/wow/libdbicon-1-0/trunk/LibDBIcon-1.0
+
 move-folders:
   LayerAnarchy/LayerAnarchy: LayerAnarchy
 
