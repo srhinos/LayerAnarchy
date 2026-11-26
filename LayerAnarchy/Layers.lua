@@ -23,7 +23,6 @@ local NO_LAYER = "Layer –"
 local EMPTY = {}
 
 local realm, here, last, holdUntil, sweepTimer, revealer
-local owed = false
 local reach, readings, rows = {}, {}, {}
 
 local function readingOf(guid)
@@ -279,13 +278,18 @@ local function seePlates()
   for _, plate in ipairs(C_NamePlate.GetNamePlates() or EMPTY) do see(plate.namePlateUnitToken) end
 end
 
+local function setCVar(name, value)
+  local ok, done = pcall(C_CVar.SetCVar, name, value)
+  return ok and done
+end
+
 local function restorePlates()
   local back = LA.db.platesBack
-  if not back or LA.CombatLocked() then return end
+  if not back then return end
   for name, was in pairs(back) do
-    if C_CVar.GetCVar(name) == SHOW[name] then C_CVar.SetCVar(name, was) end
+    if C_CVar.GetCVar(name) ~= SHOW[name] or setCVar(name, was) then back[name] = nil end
   end
-  LA.db.platesBack = nil
+  if not next(back) then LA.db.platesBack = nil end
 end
 
 local function waitPlates(frame, elapsed)
@@ -312,7 +316,7 @@ local function reveal()
   LA.db.platesBack, revealer.shown = back, false
   for name, want in pairs(SHOW) do
     local was = C_CVar.GetCVar(name)
-    if was and was ~= want and (name ~= CROWD_CVAR or crowd) and C_CVar.SetCVar(name, want) then back[name] = was end
+    if was and was ~= want and (name ~= CROWD_CVAR or crowd) and setCVar(name, want) then back[name] = was end
   end
   if not next(back) then
     LA.db.platesBack = nil
@@ -325,21 +329,13 @@ end
 
 local function sweep()
   sweepTimer = nil
-  if not LA.CombatLocked() then
-    owed = false
-    if unsettled() and reveal() then return end
-  end
+  if unsettled() and reveal() then return end
   seePlates()
 end
 
-local function unlocked()
-  restorePlates()
-  if owed and not sweepTimer and not LA.CombatLocked() then sweep() end
-end
 
 local function sweepSoon(after)
   if sweepTimer then sweepTimer:Cancel() end
-  owed = true
   sweepTimer = LA.After(after or SWEEP_AFTER, sweep)
 end
 
@@ -547,7 +543,7 @@ function Layers.Init()
   revealer = CreateFrame("Frame")
   revealer:Hide()
   revealer:SetScript("OnUpdate", LA.Guard("layers", waitPlates))
-  for _, event in ipairs(UNLOCK_EVENTS) do LA.On(event, unlocked) end
+  for _, event in ipairs(UNLOCK_EVENTS) do LA.On(event, restorePlates) end
   LA.On("PLAYER_ENTERING_WORLD", onEnteringWorld)
   LA.On("ZONE_CHANGED_NEW_AREA", onZoneChanged)
   LA.On("NAME_PLATE_UNIT_ADDED", function(_, unit)
