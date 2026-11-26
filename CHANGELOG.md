@@ -2,7 +2,7 @@
 
 ## 0.2.1
 
-- The nameplate flash while the layer shows "?" is now a blink: nameplates go back the moment they appear, and it retries every 5 seconds instead of 10.
+- The nameplate flash while the layer shows "?" is now a single blink half a second after you phase, instead of a second-long flash repeated every 10 seconds.
 
 ## 0.2.0
 

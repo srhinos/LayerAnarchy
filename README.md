@@ -12,7 +12,7 @@ I wanted one that talks to all of them and stays out of my way, so I made **Laye
 
 ## Going back to a layer
 
-- Layer Anarchy recognises layers from the creatures around you, so a layer you come back to keeps its letter: *Layer B · back after 4m*. A "?" means it hasn't confirmed which layer yet. While it shows, nameplates flash on for a moment now and then to read the creatures around you.
+- Layer Anarchy recognises layers from the creatures around you, so a layer you come back to keeps its letter: *Layer B · back after 4m*. A "?" means it hasn't confirmed which layer yet. Right after you phase, nameplates blink on for a moment to read the creatures around you.
 - Click the layer name for a list of the layers in your zone, when you were last on each, and the hosts known to be there. Pick one to swap straight back to it.
 
 ## Swap limits

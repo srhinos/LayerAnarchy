@@ -10,7 +10,7 @@ local MINUTE, HOUR = 60, 3600
 local SHOW = {
   nameplateShowAll = "1", nameplateShowEnemies = "1", nameplateShowFriendlyNPCs = "1", nameplateShowFriendlyPlayers = "0",
 }
-local CROWD_CVAR, CROWD, REVEAL_EVERY, REVEAL_WAIT, SWEEPS = "nameplateShowFriendlyPlayers", 20, 5, 0.5, 4
+local CROWD_CVAR, CROWD, REVEAL_WAIT, BLINK_AFTER = "nameplateShowFriendlyPlayers", 20, 0.5, 0.5
 local UNLOCK_EVENTS = { "PLAYER_REGEN_ENABLED", "ADDON_RESTRICTION_STATE_CHANGED" }
 local KINDS = { Creature = true, Vehicle = true }
 local GUID_FIELDS = "^(%a+)%-%d+%-(%d+)%-%d+%-(%d+)%-"
@@ -23,7 +23,7 @@ local NO_LAYER = "Layer –"
 local EMPTY = {}
 
 local realm, here, last, holdUntil, sweepTimer, revealer
-local sweeps = 0
+local owed = false
 local reach, readings, rows = {}, {}, {}
 
 local function readingOf(guid)
@@ -288,20 +288,12 @@ local function restorePlates()
   LA.db.platesBack = nil
 end
 
-local sweep
-
-local function sweepAgain()
-  if sweepTimer or sweeps >= SWEEPS or revealer:IsShown() or not unsettled() or LA.CombatLocked() then return end
-  sweepTimer = LA.After(REVEAL_EVERY, sweep)
-end
-
 local function waitPlates(frame, elapsed)
   frame.left = frame.left - elapsed
   if frame.left > 0 and unsettled() and not frame.shown then return end
   frame:Hide()
   LA.Try("layers", seePlates)
   restorePlates()
-  sweepAgain()
 end
 
 -- in a town the players' plates can fill the game's 40 before any creature's shows
@@ -331,21 +323,23 @@ local function reveal()
   return true
 end
 
-sweep = function()
-  sweepTimer, sweeps = nil, sweeps + 1
-  if unsettled() and not LA.CombatLocked() and reveal() then return end
+local function sweep()
+  sweepTimer = nil
+  if not LA.CombatLocked() then
+    owed = false
+    if unsettled() and reveal() then return end
+  end
   seePlates()
-  sweepAgain()
 end
 
 local function unlocked()
   restorePlates()
-  sweepAgain()
+  if owed and not sweepTimer and not LA.CombatLocked() then sweep() end
 end
 
 local function sweepSoon(after)
   if sweepTimer then sweepTimer:Cancel() end
-  sweeps = 0
+  owed = true
   sweepTimer = LA.After(after or SWEEP_AFTER, sweep)
 end
 
@@ -416,7 +410,7 @@ function Layers.Moved(epochBefore)
   if not z then return end
   last = { epoch = epochBefore, rec = leave(z, true) }
   arrive(z, newRecord(z))
-  sweepSoon()
+  sweepSoon(BLINK_AFTER)
 end
 
 function Layers.MovedBack(epoch)
@@ -426,7 +420,7 @@ function Layers.MovedBack(epoch)
   leave(z, true)
   local back = last and last.epoch == epoch and alive(z, last.rec)
   arrive(z, back or newRecord(z))
-  sweepSoon()
+  sweepSoon(BLINK_AFTER)
 end
 
 function Layers.Landed(name, target)
