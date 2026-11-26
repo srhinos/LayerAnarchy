@@ -5,7 +5,7 @@ local PREFIX = NET.prefixes[1]
 local RULES_TAG = "r3"
 local BURST, ROUND_GAP, MAX_ASK = 8, 1, 49
 local HEARD_GAP, LAYER_ID_MAX, EPOCH_MOD = 10, 24, 100
-local WHO_WAIT, WHO_LATE_FOR, WHO_REUSE, WHO_MAX = 5, 30, 10, 50
+local WHO_WAIT, WHO_LATE_FOR, WHO_REUSE, WHO_MAX, WHO_GAP, MORE_MIN = 5, 30, 10, 50, 2.5, 20
 local THROTTLED = Enum.SendAddonMessageResult.AddonMessageThrottle
 local WHO_ORIGIN = Enum.SocialWhoOrigin.Social
 local WHO_LISTS = { "LFGWhoListFrame", "FriendsFrame" }
@@ -109,6 +109,23 @@ end
 
 local function replyLater(callback, names, why) LA.After(0, callback, names, why) end
 
+local function sendWho(p)
+  if who.pending ~= p then return end
+  if not muteWhoLists() and InCombatLockdown() then return whoDone(p, nil, "combat") end
+  -- IsVisible: the Who list keeps its shown flag after its panel closes
+  p.panelWasOpen = LFGParentFrame ~= nil and LFGParentFrame:IsVisible()
+  LA.On("WHO_LIST_UPDATE", onWhoList)
+  C_FriendList.SetWhoToUi(true)
+  who.sentAt = GetTime()
+  local ok, err = pcall(C_FriendList.SendWho, WHO_TAG_ZONE .. '"' .. p.zoneName .. '"', WHO_ORIGIN, whoFilters(p.zone, who.round))
+  if not ok then
+    LA.Log("error", "who", err)
+    return whoDone(p, nil, "error")
+  end
+  LA.Log("who", p.zone, who.round)
+  LA.After(WHO_WAIT, whoTimeout, p)
+end
+
 function LA.Who(zone, callback)
   local last = who.last
   if last and last.zone == zone and GetTime() - last.at < WHO_REUSE then return replyLater(callback, last.names) end
@@ -125,24 +142,10 @@ function LA.Who(zone, callback)
   local info = C_Map.GetMapInfo(zone)
   local zoneName = info and LA.Safe(info.name)
   if not zoneName or zoneName == "" then return replyLater(callback, nil, "nozone") end
-  local query = WHO_TAG_ZONE .. '"' .. zoneName .. '"'
   if who.roundZone ~= zone then who.round, who.roundZone = 0, zone end
-  if not muteWhoLists() and InCombatLockdown() then
-    unmuteWhoLists()
-    return replyLater(callback, nil, "combat")
-  end
-  -- IsVisible: the Who list keeps its shown flag after its panel closes
-  p = { zone = zone, zoneName = zoneName, callbacks = { callback },
-    panelWasOpen = LFGParentFrame ~= nil and LFGParentFrame:IsVisible() }
+  p = { zone = zone, zoneName = zoneName, callbacks = { callback } }
   who.pending = p
-  LA.On("WHO_LIST_UPDATE", onWhoList)
-  C_FriendList.SetWhoToUi(true)
-  local ok, err = pcall(C_FriendList.SendWho, query, WHO_ORIGIN, whoFilters(zone, who.round))
-  if not ok then
-    LA.Log("error", "who", err)
-    return whoDone(p, nil, "error")
-  end
-  LA.After(WHO_WAIT, whoTimeout, p)
+  LA.After(math.max(0, (who.sentAt or -WHO_GAP) + WHO_GAP - GetTime()), sendWho, p)
 end
 
 local book, adopted, cur
@@ -205,7 +208,7 @@ end
 
 local function live(st) return st ~= nil and cur == st and not st.stopped and st.ask.active end
 
-local function progress(st) st.ask.Progress(NET.id, st.i - 1, #st.queue, st.more) end
+local function progress(st) st.ask.Progress(NET.id, st.i - 1, #st.queue, st.more, st.gathering) end
 
 local function round(st)
   if not live(st) then return end
@@ -321,24 +324,31 @@ function NET.Ask(_, ask)
   LA.Who(zone, function(names)
     if not live(st) then return end
     st.queue = hostsFirst(names or bookHosts(zone))
-    st.more = who.capped
+    st.more = who.round ~= 0
     markSeen(st, st.queue)
     round(st)
+  end)
+end
+
+local function gather(st)
+  who.last = nil
+  LA.Who(st.zone, function(names)
+    if not live(st) then return end
+    st.added = st.added + (names and enqueue(st, names) or 0)
+    local slicesLeft = names ~= nil and who.round ~= 0
+    if slicesLeft and st.added < MORE_MIN then return gather(st) end
+    st.more, st.gathering = slicesLeft, false
+    LA.Log("more", st.added, slicesLeft and "more" or "done")
+    if st.added > 0 then round(st) else progress(st) end
   end)
 end
 
 function NET.More(_, ask)
   local st = cur
   if not (live(st) and st.ask == ask) then return end
-  who.last = nil
-  st.more = false
+  st.more, st.gathering, st.added = false, true, 0
   progress(st)
-  LA.Who(st.zone, function(names)
-    if not live(st) then return end
-    local added = names and enqueue(st, names) or 0
-    st.more = who.capped and added > 0
-    if added > 0 then round(st) else progress(st) end
-  end)
+  gather(st)
 end
 
 function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur.stopped = true end end

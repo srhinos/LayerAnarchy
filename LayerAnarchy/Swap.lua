@@ -3,7 +3,7 @@ local _, LA = ...
 local Swap = {}
 LA.Swap = Swap
 
-local ASK_WINDOW, RETRY_WINDOW, MORE_WINDOW, FALLBACK_AFTER = 25, 10, 20, 8
+local ASK_WINDOW, RETRY_WINDOW, FALLBACK_AFTER = 25, 10, 8
 local JOIN_WAIT, VERDICT_AFTER, LEAVE_AFTER, MOVED_BACK_WATCH, SETTLE_MARGIN = 10, 3, 3, 6, 3
 local NOTE_FOR, LATE_FOR, SYSTEM_FRESH, BLOCKED_FLASH, STALE_SWAP = 6, 90, 3, 4, 120
 local HOUR = 3600
@@ -64,7 +64,7 @@ local function progressOf(s)
   local sent, total, more, busy = 0, 0, false, false
   for _, p in pairs(s.progress) do
     sent, total = sent + p.sent, total + p.total
-    if p.sent < p.total then busy = true end
+    if p.searching or p.sent < p.total then busy = true end
     if p.more then more = true end
   end
   return sent, total, more and not busy, busy
@@ -167,10 +167,11 @@ local function newAsk()
     local key = LA.NameKey(name)
     if key then s.refused[key] = true end
   end
-  function s.Progress(netId, sent, total, more)
+  function s.Progress(netId, sent, total, more, searching)
     local p = s.progress[netId] or {}
     s.progress[netId] = p
-    p.sent, p.total, p.more = sent, total, more and true or false
+    if searching or sent > (p.sent or 0) then extend(s, RETRY_WINDOW) end
+    p.sent, p.total, p.more, p.searching = sent, total, more and true or false, searching and true or false
     LA.Refresh()
   end
   function s.AllowAny(seconds)
@@ -185,6 +186,7 @@ function Swap.Start()
   cur = s
   muteInvites(true)
   LA.ClearFlash()
+  LA.Log("ask", s.zone, InCombatLockdown() and "combat" or "")
   LA.Each("Ask", s)
   armDeadline(s)
   LA.After(FALLBACK_AFTER, tryFallback, s, true)
@@ -206,9 +208,7 @@ function Swap.Stop()
 end
 
 function Swap.More()
-  local s = cur
-  extend(s, MORE_WINDOW)
-  LA.Each("More", s)
+  LA.Each("More", cur)
   LA.Refresh()
 end
 

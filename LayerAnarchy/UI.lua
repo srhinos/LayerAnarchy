@@ -176,11 +176,6 @@ local function barsGlyph(parent)
   return g
 end
 
-local function selectable(b)
-  b.OnSmartNavSelect, b.OnSmartNavDeselect = pad.Pick, pad.Unpick
-  return b
-end
-
 local function button(parent, w, h)
   local b = CreateFrame("Button", nil, parent)
   b:SetSize(w, h)
@@ -190,7 +185,7 @@ local function button(parent, w, h)
   b.label:SetJustifyH("CENTER")
   b.label:SetPoint("LEFT", BUTTON_INSET, 0)
   b.label:SetPoint("RIGHT", -BUTTON_INSET, 0)
-  return selectable(b)
+  return b
 end
 
 local function layoutDrawer(d, below)
@@ -298,7 +293,6 @@ local function openDrawer(d)
   placeDrawer(d)
   d:Show()
   paintToggles()
-  pad.Select(d.first)
 end
 
 local function toggleDrawer(d) if open == d then closeDrawer() else openDrawer(d) end end
@@ -354,7 +348,7 @@ local function glyphButton(parent, onClick, draw)
   b:SetScript("OnEnter", function(self) paint(self.glyph, C.gold) end)
   b:SetScript("OnLeave", function(self) paint(self.glyph, (self.held and self.held()) and C.gold or C.grey) end)
   b:SetScript("OnClick", onClick)
-  return selectable(b)
+  return b
 end
 
 local function drawerButton(key, draw)
@@ -379,7 +373,7 @@ local function label(r, font, size, c, text)
 end
 
 local function optionRow(list, i, text, key)
-  local r = selectable(row(list, (i - 1) * OPT_H, OPT_H, "Button"))
+  local r = row(list, (i - 1) * OPT_H, OPT_H, "Button")
   solid(r, "HIGHLIGHT", C.hover):SetAllPoints()
   label(r, FONT, SIZE.option, C.text, text)
   local pill = CreateFrame("Frame", nil, r)
@@ -409,7 +403,7 @@ local function stepper(sl, dir, angles)
 end
 
 local function sliderRow(list, i, text, key, lo, hi, step, fmt, tip)
-  local r = selectable(row(list, (i - 1) * OPT_H, OPT_H, "Button"))
+  local r = row(list, (i - 1) * OPT_H, OPT_H, "Button")
   solid(r, "HIGHLIGHT", C.hover):SetAllPoints()
   label(r, FONT, SIZE.option, C.text, text)
   local readout = fontString(r, FONT, SIZE.option, C.value)
@@ -476,7 +470,6 @@ local function drawer(key, name, title)
   d.close = glyphButton(d.head, closeDrawer, icon(CLOSE_SIZE, ICON.minus, CROSS))
   d.close:SetPoint("RIGHT")
   d.body = CreateFrame("Frame", nil, d)
-  d.back = toggles[key]
   drawers[key] = d
   return d
 end
@@ -494,7 +487,7 @@ local function buildOptions()
     "As host. Players report silences for invite spam; threshold unknown.")
   sliderRow(list, #OPTIONS + 2, "Scale", "scale", SCALE_MIN, SCALE_MAX, SCALE_STEP, scaleText)
   fitDrawer(d, (#OPTIONS + 2) * OPT_H)
-  d.sync, d.first = syncOptions, rows[1]
+  d.sync = syncOptions
 end
 
 local function drawCell(fs, n, positive, text)
@@ -546,7 +539,7 @@ local function segment(head, right)
   skin(seg, C.bg, BORDER.neutral)
   local x = SEG_INSET
   for i, w in ipairs(WINDOWS) do
-    local b = selectable(CreateFrame("Button", nil, seg))
+    local b = CreateFrame("Button", nil, seg)
     b:SetSize(w[3], SEG_H - 2 * SEG_INSET)
     b:SetPoint("LEFT", x, 0)
     b.picked = solid(b, "BACKGROUND", C.btn)
@@ -649,7 +642,7 @@ local function buildNetwork()
   local y = buildTable(d.body)
   y = section(d.body, y, "YOUR SWAPS", SWAPS)
   fitDrawer(d, section(d.body, y, "HOSTING", HOSTING))
-  d.sync, d.first = syncNetwork, segs[1]
+  d.sync = syncNetwork
   d:SetScript("OnShow", function() LA.Stats.Watch(true) end)
   d:HookScript("OnHide", function() LA.Stats.Watch(false) end)
 end
@@ -660,7 +653,6 @@ local function buildNote()
   note:SetPoint("RIGHT", box, "RIGHT", -PAD, 0)
   note:SetHeight(1)
   note:Hide()
-  note.back = box.swap
   local div = solid(note, "ARTWORK", C.btn)
   div:SetPoint("TOPLEFT"); div:SetPoint("TOPRIGHT")
   hairs[#hairs + 1] = div
@@ -782,14 +774,13 @@ local function drawBox(v)
 end
 
 local function buildHud()
-  hud = selectable(CreateFrame("Button", nil, root))
+  hud = CreateFrame("Button", nil, root)
   hud:SetSize(HUD_MIN_W, HUD_H)
   draggable(hud)
   hud:SetScript("OnMouseDown", function(self) self.moved = nil end)
   hud:SetScript("OnClick", function(self)
     if not self.moved then LA.SetSetting("minimized", false) end
   end)
-  box.back, hud.back = hud, box.mini
   skin(hud, C.hudBg, BORDER.neutral)
   hud.glyph = glyph(hud, HUD_GLYPH, ICON.layers, GLYPH.neutral)
   hud.glyph:SetPoint("LEFT", HUD_GLYPH_X, 0)
@@ -813,17 +804,10 @@ local function drawHud(v)
   paint(hud.glyph, GLYPH[v.border])
 end
 
-function pad.Pick(b) pad.picked = b end
 
-function pad.Unpick(b) if pad.picked == b then pad.picked = nil end end
 
 function pad.Restricted()
   return InCombatLockdown() or C_RestrictedActions.IsAddOnRestrictionActive(Enum.AddOnRestrictionType.Combat)
-end
-
-function pad.Select(b)
-  pad.target = b
-  queueSync()
 end
 
 function pad.Leave()
@@ -834,7 +818,7 @@ function pad.Leave()
     GamepadMode.FrameControlsManager:FrameHidden(root)
     SmartNavigation:RemovePanelInfo(root)
   end
-  pad.focused, pad.picked = false, nil
+  pad.focused = false
   applyHover()
 end
 
@@ -854,21 +838,11 @@ function pad.Prepare()
   end
 end
 
-function pad.Fallback(f)
-  while f and not f.back do f = f:GetParent() end
-  return f and f.back
-end
-
 function pad.Sync()
-  local target = pad.target
-  pad.target = nil
   if not pad.listed then return end
   if pad.release or not (current and GamepadMode.FrameControlsManager.isUIFocused and InputUtil.IsGamepadUIEnabled()) then
-    return pad.Leave()
+    pad.Leave()
   end
-  local picked = pad.picked
-  if picked and not picked:IsVisible() then target = target or pad.Fallback(picked) end
-  if target and target:IsVisible() then SmartNavigation:SetTargetButtonForFrame(root, target) end
 end
 
 function pad.Cursor()
@@ -948,17 +922,9 @@ function UI.Focus()
   if not current or pad.Restricted() or not InputUtil.IsGamepadUIEnabled() then return end
   pad.Prepare()
   pad.listed = true
-  local start = current == hud and hud or box.swap
-  SmartNavigation:SetTargetButtonForFrame(root, start)
   -- as a popup it survives the game's HUD edit mode, which hides the other listed windows
   GamepadMode.FrameControlsManager:FrameShown(root, true)
-  pad.Select(start)
-end
-
-function pad.OnFocusRequest(manager, wanted)
-  if not wanted or pad.listed or manager.isUIFocused or manager:GetShownFrameCount() > 0 then return end
-  UIErrorsFrame:Clear()
-  UI.Focus()
+  queueSync()
 end
 
 function UI.SendKey()
@@ -979,7 +945,6 @@ function UI.Init()
   LA.On("ADDON_RESTRICTION_STATE_CHANGED", pad.OnRestriction)
   LA.On("INPUT_DEVICE_INTERFACE_TRANSITION", LA.Refresh)
   EventRegistry:RegisterCallback("Gamepad.RefreshFrameFocus", queueSync, pad)
-  hooksecurefunc(GamepadMode.FrameControlsManager, "SetUIFocusState", LA.Guard("pad", pad.OnFocusRequest))
   LA.Command("diag pad", pad.Print)
   place()
   UI.Refresh()
