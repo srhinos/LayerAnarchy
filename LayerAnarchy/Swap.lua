@@ -112,6 +112,14 @@ local function tryFallback(s, due)
   end
 end
 
+local function refuse(s, key)
+  if s.refused[key] then return end
+  s.refused[key] = true
+  if not s.offers[key] then return end
+  s.found = s.found - 1
+  if s.found == 0 then tryFallback(s) end
+end
+
 local function prefillEnded(s, sent)
   if cur ~= s or s.fallback ~= "prefilled" then return end
   s.fallback = sent and "sent" or "offered"
@@ -134,7 +142,7 @@ local function retry(why, note)
   local s = cur
   if not s then return end
   if s.hostKey then
-    s.refused[s.hostKey] = true
+    refuse(s, s.hostKey)
     LA.Each("OnHostFailed", s, why, s.host)
   end
   setPhase(s, "asking")
@@ -165,7 +173,7 @@ local function newAsk()
   end
   function s.Refuse(name)
     local key = LA.NameKey(name)
-    if key then s.refused[key] = true end
+    if key then refuse(s, key) end
   end
   function s.Progress(netId, sent, total, more, searching)
     local p = s.progress[netId] or {}
@@ -337,7 +345,7 @@ local function handled(name, key, friend, sameShard)
   if s and s.phase == "asking" and wanted(s, key, friend) then
     if sameShard or s.refused[key] then
       decline(name, "same shard")
-      s.refused[key] = true
+      refuse(s, key)
       LA.Each("OnHostFailed", s, "same", name)
       return true
     end

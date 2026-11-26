@@ -399,7 +399,7 @@ local function wave(st, first)
   local me = LA.Me()
   if not validName(me) then return end
   local targets = pick(FANOUT, st.asked)
-  if #targets == 0 then return end
+  if #targets == 0 then return st.ask.Progress(NET.id, 0, 0, false) end
   st.waves, st.lastQ = st.waves + 1, GetTime()
   local text = ("Q:1:1:%d:%s:%s"):format(st.zone, st.nonce, me)
   for _, name in ipairs(targets) do
@@ -411,6 +411,7 @@ local function wave(st, first)
       send(VL, text, name, false, Q_TTL)
     end
   end
+  st.ask.Progress(NET.id, 0, 0, st.waves < WAVES)
 end
 
 local function relay(zone, nonce, asker, exclude)
@@ -565,6 +566,8 @@ function NET.Ask(_, ask)
   if t - roster.at > ROSTER_FRESH then readRoster(function() wave(st) end) end
   LA.After(WAVE_GAP, wave, st)
 end
+
+function NET.More(_, ask) if cur and cur.ask == ask then wave(cur, true) end end
 
 function NET.StopAsk(_, ask) if cur and cur.ask == ask then cur = nil end end
 
