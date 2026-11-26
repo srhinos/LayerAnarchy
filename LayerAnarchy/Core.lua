@@ -159,7 +159,7 @@ end
 function LA.ToggleSetting(key) LA.SetSetting(key, not LA.Setting(key)) end
 
 function LA.ToggleHelp()
-  if LA.disabled or LA.Debug.Previewing() then return end
+  if LA.disabled then return end
   LA.ToggleSetting("help")
 end
 
@@ -836,7 +836,6 @@ end
 function LA.View()
   local v = view
   resetView(v)
-  if LA.Debug.Fill(v) then return v end
   if LA.disabled then
     v.status, v.tone, v.swapEnabled, v.help = "Off – " .. offBy .. " loaded", "off", false, false
   elseif not LA.Swap.View(v) then

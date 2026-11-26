@@ -1,7 +1,7 @@
 local _, LA = ...
 
 local Debug = {}
-LA.Debug = Debug
+
 
 local STATE_EVERY = 2.5
 local LABEL, MOVED_LABEL, NEW_LABEL, BACK = "Layer C", "Layer H", "Layer F?", "· back after 4m"
@@ -96,6 +96,7 @@ local LAYERS = {
 
 local ticker, step, faking = nil, 1, false
 local fakeStats = {}
+local realView, realList, realNet, realStatsView = LA.View, LA.Layers.List, LA.Stats.Net, LA.Stats.View
 
 local function window() return FAKE[LA.Setting("statsWindow")] end
 
@@ -110,18 +111,16 @@ local function advance()
   LA.Refresh()
 end
 
-function Debug.Previewing() return ticker ~= nil end
-
-function Debug.Fill(v)
-  if not ticker then return false end
-  v.label, v.back, v.help = LABEL, nil, true
+function LA.View()
+  local v = realView()
+  if not ticker then return v end
+  v.label, v.back, v.help, v.status, v.tone, v.border, v.notice = LABEL, nil, true, nil, "idle", "neutral", nil
+  v.swapText, v.swapEnabled = "Swap", true
   for key, value in pairs(STATES[step]) do v[key] = value end
-  return true
+  return v
 end
 
-function Debug.Stats() return faking and fakeStats or nil end
-
-function Debug.Layers() return ticker and LAYERS or nil end
+function LA.Layers.List() return ticker and LAYERS or realList() end
 
 function Debug.ToggleStates()
   if ticker then
@@ -136,6 +135,8 @@ end
 
 function Debug.ToggleStats()
   faking = not faking
+  LA.Stats.Net = faking and fakeStats.Net or realNet
+  LA.Stats.View = faking and fakeStats.View or realStatsView
   announce("stats", faking)
   LA.Refresh()
 end

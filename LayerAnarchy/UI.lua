@@ -629,7 +629,7 @@ end
 
 local function syncNetwork()
   syncSegment()
-  local stats = LA.Debug.Stats() or LA.Stats
+  local stats = LA.Stats
   for _, r in ipairs(netRows) do
     local seen, talking, hosts = stats.Net(r.id)
     drawCell(r.cells[1], seen)
@@ -747,7 +747,7 @@ end
 
 function layers.Sync()
   if not layers.panel:IsShown() then return end
-  local list = LA.Debug.Layers() or LA.Layers.List()
+  local list = LA.Layers.List()
   for i, row in ipairs(list) do layers.Draw(layers.Row(i), row) end
   for i = #list + 1, #layers.rows do layers.rows[i]:Hide() end
   if layers.count ~= #list then

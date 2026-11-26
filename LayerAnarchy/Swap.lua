@@ -306,13 +306,13 @@ local function blocked()
 end
 
 function LA.SwapClick()
-  if LA.disabled or LA.Debug.Previewing() then return end
+  if LA.disabled then return end
   if cur then return Swap.Stop() end
   if not blocked() then Swap.Start() end
 end
 
 function LA.SwapTo(rec)
-  if LA.disabled or LA.Debug.Previewing() or cur or blocked() then return end
+  if LA.disabled or cur or blocked() then return end
   startTargeted(rec)
 end
 
