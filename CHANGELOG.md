@@ -2,6 +2,8 @@
 
 ## 0.2.2
 
+- Your chat channels keep their numbers (General 1, Trade 2 and so on), even when Layer Anarchy joins its channels first or while you're in a dungeon.
+- When another layer addon is loaded, the window has a button that disables it and reloads.
 - Optional minimap button, off by default: turn it on under the cog's options. Click shows or hides the window; drag it around the minimap's edge. It's a standard LibDBIcon button, so button collectors like HidingBar pick it up.
 
 ## 0.2.1

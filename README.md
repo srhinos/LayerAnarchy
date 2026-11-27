@@ -6,6 +6,8 @@ Every layer addon on Forever runs its own network, so you only reach the hosts w
 
 I wanted one that talks to all of them and stays out of my way, so I made **Layer Anarchy**.
 
+**Turn off your other layer addon first.** Layer Anarchy stays off while LayerSwap, Bulo Layer Forever, AutoLayer or another layer addon that sends or accepts invites is loaded, so the two don't fight over invites. Its window tells you which one and has a button that disables it for you.
+
 ## How it works
 
 - **Swap** asks for an invite on LayerSwap's network (Bulo Layer Forever and Forever Simple Layer use it too), VoidNet and Forever Layer Hop at the same time, then keeps asking more players every few seconds until it finds a host or runs out of people. It takes the first invite that can move you, checks that your layer actually changed, and leaves the group.
@@ -39,11 +41,7 @@ I wanted one that talks to all of them and stays out of my way, so I made **Laye
 - `/la focus` puts the controller on the window
 - `/la diag` prints a report, handy for bug reports
 
-Key bindings are under Layer Anarchy.
-
-## Other layer addons
-
-Layer Anarchy switches itself off if another layer addon that sends or accepts invites is loaded, so the two don't fight over invites. Turn the other one off to use it.
+To swap with a key, bind **Swap layer** in the game's Keybindings, under Layer Anarchy.
 
 ## Source
 

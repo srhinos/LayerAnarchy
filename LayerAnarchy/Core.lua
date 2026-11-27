@@ -27,7 +27,7 @@ local COUNTDOWN_MINUTES = { 5, 10, 15, 30, 45 }
 local BORDER_BEFORE, BORDER_AFTER, TRANSFER_SETTLE, SIGHTINGS_HELD = 10, 2, 2, 3
 local NOT_FOUND_FOR, OFFLINE_FOR, GATE_MAX, GATE_AGE = 30, 1800, 256, 300
 local BOOK_DAYS, BOOK_MAX, PARTY_SIZE, RAID_SIZE, MAP_CLIMB = 7, 300, 4, 40, 10
-local CHANNEL_DELAY, JOIN_TIMEOUT, LOW_SLOTS, RELOCATE_AFTER = 10, 10, 5, 30
+local CHANNEL_DELAY, JOIN_TIMEOUT = 10, 10
 local GROUP_QUIET_FOR = 60
 local MAX_WINDOWS = Constants.ChatFrameConstants.MaxChatWindows
 local ZONE = Enum.UIMapType.Zone
@@ -420,8 +420,7 @@ function LA.ClearPrefill()
   endPrefill()
 end
 
-local joins, relocated = {}, {}
-local startJoin
+local joins = {}
 
 function LA.ChannelId(name)
   local id = GetChannelName(name)
@@ -454,16 +453,10 @@ local function finishJoin(name, why)
     return job.onDone(name, nil, why)
   end
   hideChannel(name)
-  if id <= LOW_SLOTS and not relocated[name] then
-    relocated[name] = true
-    pcall(LeaveChannelByName, name)
-    LA.After(RELOCATE_AFTER, startJoin, job)
-    return
-  end
   job.onDone(name, id)
 end
 
-startJoin = function(job)
+local function startJoin(job)
   local name = job.name
   local id = LA.ChannelId(name)
   if id then return job.onDone(name, id) end
@@ -489,13 +482,36 @@ function LA.LeaveChannels(owner, keep)
   end
 end
 
-local function onChannelNotice(_, kind, _, _, _, _, _, _, _, base)
-  kind, base = LA.Safe(kind), LA.Safe(base)
-  if not (base and joins[base]) then return end
-  if JOINED[kind] then
-    finishJoin(base)
-  elseif REFUSED[kind] then
-    finishJoin(base, kind)
+local function ours(name)
+  local low = name:lower()
+  for joined in pairs(LA.db.channels) do
+    if joined:lower() == low then return true end
+  end
+  return false
+end
+
+-- the game gives a joining channel the lowest free number, so one of the player's that lands behind ours
+-- takes our lowest slot below it: the number it would have had without us
+local function giveBackSlot(index)
+  local lowest
+  for name in pairs(LA.db.channels) do
+    local id = LA.ChannelId(name)
+    if id and id < index and (not lowest or id < lowest) then lowest = id end
+  end
+  if lowest then pcall(C_ChatInfo.SwapChatChannelsByChannelIndex, lowest, index) end
+end
+
+local function onChannelNotice(_, kind, _, _, _, _, _, _, index, base)
+  kind, index, base = LA.Safe(kind), LA.Safe(index), LA.Safe(base)
+  if not base then return end
+  if joins[base] then
+    if JOINED[kind] then
+      finishJoin(base)
+    elseif REFUSED[kind] then
+      finishJoin(base, kind)
+    end
+  elseif JOINED[kind] and type(index) == "number" and not ours(base) then
+    giveBackSlot(index)
   end
 end
 
@@ -784,7 +800,7 @@ function LA.WakeIn(sec)
 end
 
 local flash = { untilAt = 0 }
-local refreshAt, offBy
+local refreshAt, offBy, offNotice
 
 function LA.Flash(text, notice, seconds, tone)
   flash.text, flash.untilAt, flash.tone = text, GetTime() + (seconds or FLASH_FOR), tone or "fail"
@@ -838,6 +854,7 @@ function LA.View()
   resetView(v)
   if LA.disabled then
     v.status, v.tone, v.swapEnabled, v.help = "Off – " .. offBy .. " loaded", "off", false, false
+    v.notice = offNotice
   elseif not LA.Swap.View(v) then
     idleView(v, GetTime())
   end
@@ -910,7 +927,13 @@ local function otherLoaded()
     if C_AddOns.IsAddOnLoaded(name) then found[#found + 1] = name end
   end
   if #found == 0 then return nil end
-  return table.concat(found, ", "), #found == 1 and found[1] or (#found .. " layer addons")
+  return table.concat(found, ", "), #found == 1 and found[1] or (#found .. " layer addons"), found
+end
+
+local function disableOthers(others)
+  local me = UnitGUID("player")
+  for _, name in ipairs(others) do C_AddOns.DisableAddOn(name, me) end
+  ReloadUI()
 end
 
 local function startNetwork(net)
@@ -946,9 +969,11 @@ local function watchTransfers()
 end
 
 local function start()
-  LA.disabled, offBy = otherLoaded()
+  local others
+  LA.disabled, offBy, others = otherLoaded()
   if LA.disabled then
     print(TITLE .. " off: " .. LA.disabled .. " loaded.")
+    offNotice = { text = "", tone = "warn", buttons = { { text = "Disable " .. offBy, onClick = function() disableOthers(others) end } } }
   else
     for _, net in ipairs(nets) do startNetwork(net) end
     LA.Layers.Init()

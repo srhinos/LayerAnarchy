@@ -66,7 +66,7 @@ local STATES = {
   waiting("Reset in ~45m"),
   waiting("Refresh in 0:47", "fail", REFRESH_NOTICE),
   { status = "Inviting " .. GUEST, tone = "host", border = "host" },
-  { status = "Off – AutoLayer loaded", tone = "off", swapEnabled = false },
+  { status = "Off – AutoLayer loaded", tone = "off", swapEnabled = false, notice = { text = "", tone = "warn", buttons = { { text = "Disable AutoLayer" } } } },
 }
 
 local FAKE = {
