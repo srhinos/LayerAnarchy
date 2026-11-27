@@ -1,5 +1,9 @@
 # Layer Anarchy
 
+## 0.2.3
+
+- Hosting pauses while you're listed in the group finder, queued in the dungeon finder or queued for a battleground, so a guest joining your group can't cost you your place.
+
 ## 0.2.2
 
 - Your chat channels keep their numbers (General 1, Trade 2 and so on), even when Layer Anarchy joins its channels first or while you're in a dungeon.

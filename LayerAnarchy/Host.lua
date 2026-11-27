@@ -85,9 +85,26 @@ local function releasable()
   return lastMove()
 end
 
+local FINDER_BUSY = { queued = true, listed = true, rolecheck = true, proposal = true }
+local BATTLEGROUND_BUSY = { queued = true, confirm = true }
+local QUEUE_EVENTS = { "LFG_UPDATE", "LFG_LIST_ACTIVE_ENTRY_UPDATE", "UPDATE_BATTLEFIELD_STATUS" }
+
+-- a guest joining the group takes the host off a group finder listing or out of a battleground queue
+local function queued()
+  if LA.Safe(C_LFGList.HasActiveEntryInfo()) == true then return true end
+  for category = 1, NUM_LE_LFG_CATEGORYS do
+    if FINDER_BUSY[LA.Safe(GetLFGMode(category))] then return true end
+  end
+  for i = 1, GetMaxBattlefieldID() do
+    if BATTLEGROUND_BUSY[LA.Safe(GetBattlefieldStatus(i))] then return true end
+  end
+  return false
+end
+
 local function blocked()
   if LA.disabled or not LA.Setting("help") then return "off" end
   if IsInInstance() then return "instance" end
+  if queued() then return "queued" end
   -- forming a group while the layer is closing makes the game move us at once
   if LA.Closing() then return "closing" end
   if UnitOnTaxi("player") and not LA.Setting("hostWhileFlying") then return "flying" end
@@ -321,4 +338,5 @@ function Host.Init()
   LA.On("CHAT_MSG_SYSTEM", onSystem)
   LA.On("PLAYER_CONTROL_LOST", LA.Refresh)
   LA.On("PLAYER_CONTROL_GAINED", onControlGained)
+  for _, event in ipairs(QUEUE_EVENTS) do LA.On(event, LA.Refresh) end
 end
