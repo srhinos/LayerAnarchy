@@ -973,7 +973,10 @@ local function start()
   LA.disabled, offBy, others = otherLoaded()
   if LA.disabled then
     print(TITLE .. " off: " .. LA.disabled .. " loaded.")
-    offNotice = { text = "", tone = "warn", buttons = { { text = "Disable " .. offBy, onClick = function() disableOthers(others) end } } }
+    offNotice = { text = "", tone = "warn", buttons = { {
+      text = "Disable " .. offBy, onClick = function() disableOthers(others) end,
+      tip = "Both addons would answer the same invites and leave the same groups, undoing each other's swaps.",
+    } } }
   else
     for _, net in ipairs(nets) do startNetwork(net) end
     LA.Layers.Init()

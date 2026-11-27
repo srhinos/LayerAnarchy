@@ -339,6 +339,7 @@ local function syncOptions()
 end
 
 local function showTip(self)
+  if not self.tip then return end
   GameTooltip:SetOwner(self, "ANCHOR_TOP")
   GameTooltip:SetText(self.tip, C.bright[1], C.bright[2], C.bright[3], C.bright[4], true)
   GameTooltip:Show()
@@ -853,6 +854,8 @@ local function noteButton(i)
   b:SetScript("OnClick", function(self)
     if self.onClick then self.onClick() end
   end)
+  b:SetScript("OnEnter", showTip)
+  b:SetScript("OnLeave", hideTip)
   watchHover(b)
   note.buttons[i] = b
   thinEdges()
@@ -894,7 +897,7 @@ local function drawNotice(n)
   end
   for i = 1, count do
     local b = note.buttons[i]
-    b.onClick = list[i].onClick
+    b.onClick, b.tip = list[i].onClick, list[i].tip
     setText(b.label, list[i].text)
     setEdge(b, NOTE_EDGE[n.tone])
   end
