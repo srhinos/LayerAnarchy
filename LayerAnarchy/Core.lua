@@ -55,7 +55,9 @@ local ASK_BLOCKED_WORDS = {}
 for word in ("wts wtb wtt lfm lfg guild raid enchant enchanting recruiting selling buying worldbuffs autoinv"):gmatch("%a+") do
   ASK_BLOCKED_WORDS[word] = true
 end
+local CONFLICT = "Layer addons running together answer the same invites and leave the same groups, undoing each other's swaps."
 local JOINED = { YOU_CHANGED = true, YOU_JOINED = true }
+local LEFT = { YOU_LEFT = true, SUSPENDED = true }
 local REFUSED = { WRONG_PASSWORD = true, BANNED = true }
 local MAP_EVENTS = { "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "PLAYER_ENTERING_WORLD" }
 local NOTICE_EVENTS = { "CHAT_MSG_CHANNEL_NOTICE", "CHAT_MSG_CHANNEL_NOTICE_USER" }
@@ -420,7 +422,13 @@ function LA.ClearPrefill()
   endPrefill()
 end
 
-local joins = {}
+local joins, mine, placed, reloaded = {}, {}, {}
+
+LA.On("PLAYER_ENTERING_WORLD", function(_, _, isReloadingUi)
+  if reloaded == nil then reloaded = LA.Safe(isReloadingUi) == true end
+end)
+
+local function claim(name) mine[name:lower()] = name end
 
 function LA.ChannelId(name)
   local id = GetChannelName(name)
@@ -452,6 +460,7 @@ local function finishJoin(name, why)
     LA.Log("channel-failed", name, why)
     return job.onDone(name, nil, why)
   end
+  claim(name)
   hideChannel(name)
   job.onDone(name, id)
 end
@@ -459,7 +468,12 @@ end
 local function startJoin(job)
   local name = job.name
   local id = LA.ChannelId(name)
-  if id then return job.onDone(name, id) end
+  if id then
+    if mine[name:lower()] then return job.onDone(name, id) end
+    -- our channels outlive a /reload but not a logout: one already joined at login is the player's
+    if reloaded and LA.db.channels[name] then claim(name) else LA.db.channels[name] = nil end
+    return job.onDone(name, id)
+  end
   if joins[name] then return end
   joins[name] = job
   LA.db.channels[name] = job.owner
@@ -476,29 +490,45 @@ function LA.LeaveChannels(owner, keep)
   local channels = LA.db.channels
   for name, by in pairs(channels) do
     if by == owner and not keep[name] then
-      if LA.ChannelId(name) then pcall(LeaveChannelByName, name) end
-      channels[name] = nil
+      if mine[name:lower()] and LA.ChannelId(name) then pcall(LeaveChannelByName, name) end
+      mine[name:lower()], channels[name] = nil, nil
     end
   end
 end
 
-local function ours(name)
-  local low = name:lower()
-  for joined in pairs(LA.db.channels) do
-    if joined:lower() == low then return true end
+local function placeChannels(...)
+  for i = 1, select("#", ...), 3 do
+    local id, name = LA.Safe((select(i, ...))), LA.Safe((select(i + 1, ...)))
+    if type(id) == "number" and type(name) == "string" then placed[name:lower()] = id end
   end
-  return false
 end
 
--- the game gives a joining channel the lowest free number, so one of the player's that lands behind ours
--- takes our lowest slot below it: the number it would have had without us
+local function followSwap(from, to)
+  local box = prefill.box
+  if box and box:GetAttribute(TARGET_ATTRIBUTE.CHANNEL) == from then
+    box:SetAttribute(TARGET_ATTRIBUTE.CHANNEL, to)
+    pcall(box.UpdateHeader, box)
+  end
+end
+
+-- the game hands a joining channel the lowest free number: ours below it took the number it would have had
 local function giveBackSlot(index)
   local lowest
-  for name in pairs(LA.db.channels) do
+  for _, name in pairs(mine) do
     local id = LA.ChannelId(name)
     if id and id < index and (not lowest or id < lowest) then lowest = id end
   end
-  if lowest then pcall(C_ChatInfo.SwapChatChannelsByChannelIndex, lowest, index) end
+  if not (lowest and pcall(C_ChatInfo.SwapChatChannelsByChannelIndex, lowest, index)) then return index end
+  followSwap(lowest, index)
+  return lowest
+end
+
+local function onPlayerChannel(kind, index, low)
+  if LEFT[kind] then
+    placed[low] = nil
+  elseif JOINED[kind] and type(index) == "number" and placed[low] ~= index then
+    placed[low] = giveBackSlot(index)
+  end
 end
 
 local function onChannelNotice(_, kind, _, _, _, _, _, _, index, base)
@@ -510,9 +540,11 @@ local function onChannelNotice(_, kind, _, _, _, _, _, _, index, base)
     elseif REFUSED[kind] then
       finishJoin(base, kind)
     end
-  elseif JOINED[kind] and type(index) == "number" and not ours(base) then
-    giveBackSlot(index)
+    return
   end
+  local low = base:lower()
+  if not mine[low] then return onPlayerChannel(kind, index, low) end
+  if LEFT[kind] then mine[low] = nil end
 end
 
 local function onPasswordRequest(_, name)
@@ -949,6 +981,7 @@ end
 local function openChannels() LA.Each("OnChannels") end
 
 local function watchChat()
+  placeChannels(GetChannelList())
   notFoundPattern = linePattern(ERR_CHAT_PLAYER_NOT_FOUND_S)
   buildGroupLines()
   ChatFrameUtil.AddMessageEventFilter("CHAT_MSG_SYSTEM", hideSystemLine)
@@ -975,7 +1008,7 @@ local function start()
     print(TITLE .. " off: " .. LA.disabled .. " loaded.")
     offNotice = { text = "", tone = "warn", buttons = { {
       text = "Disable " .. offBy, onClick = function() disableOthers(others) end,
-      tip = "Both addons would answer the same invites and leave the same groups, undoing each other's swaps.",
+      tip = (#others > 1 and (LA.disabled .. "\n") or "") .. CONFLICT,
     } } }
   else
     for _, net in ipairs(nets) do startNetwork(net) end

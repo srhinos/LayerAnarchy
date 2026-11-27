@@ -67,7 +67,7 @@ local STATES = {
   waiting("Refresh in 0:47", "fail", REFRESH_NOTICE),
   { status = "Inviting " .. GUEST, tone = "host", border = "host" },
   { status = "Off – AutoLayer loaded", tone = "off", swapEnabled = false, notice = { text = "", tone = "warn", buttons = { {
-    text = "Disable AutoLayer", tip = "Both addons would answer the same invites and leave the same groups, undoing each other's swaps.",
+    text = "Disable AutoLayer", tip = "Layer addons running together answer the same invites and leave the same groups, undoing each other's swaps.",
   } } } },
 }
 
