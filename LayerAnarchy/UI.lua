@@ -59,6 +59,7 @@ local NOTE_EDGE = { warn = BORDER.fail, fail = BORDER.fail, swap = BORDER.swap, 
 local OPTIONS = {
   { "Host for others", "help" },
   { "Host while flying", "hostWhileFlying" },
+  { "Host while queued", "hostWhileQueued" },
   { "Accept and leave automatically", "auto" },
   { "Sound when moved", "sound" },
   { "Ask AutoLayer hosts too", "askAutoLayer" },

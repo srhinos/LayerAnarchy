@@ -3,7 +3,7 @@
 ## 0.2.3
 
 - When you can't host right now, LayerSwap and Bulo players see you as busy or Host off, instead of "not updated".
-- Hosting pauses while you're listed in the group finder, queued in the dungeon finder or queued for a battleground, so a guest joining your group can't cost you your place.
+- Hosting pauses while you're listed in the group finder, queued in the dungeon finder or queued for a battleground, so a guest joining your group can't cost you your place. Tick **Host while queued** in the options to keep hosting anyway.
 
 ## 0.2.2
 

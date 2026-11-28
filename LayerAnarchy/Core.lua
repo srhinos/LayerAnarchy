@@ -3,7 +3,7 @@ LA.VERSION = C_AddOns.GetAddOnMetadata(ADDON, "Version")
 
 local TITLE = "|cffe8cc6aLayer Anarchy|r"
 local DEFAULTS = {
-  help = true, hostWhileFlying = true, auto = true, sound = false, askAutoLayer = true, invitesPerHour = 0,
+  help = true, hostWhileFlying = true, hostWhileQueued = false, auto = true, sound = false, askAutoLayer = true, invitesPerHour = 0,
   locked = false, scale = 1, minimized = false, hidden = false, statsWindow = "hour", minimap = false,
 }
 local UNDEFAULTED = { point = true }

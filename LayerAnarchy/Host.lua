@@ -104,7 +104,7 @@ end
 local function blocked()
   if LA.disabled or not LA.Setting("help") then return "off" end
   if IsInInstance() then return "instance" end
-  if queued() then return "queued" end
+  if not LA.Setting("hostWhileQueued") and queued() then return "queued" end
   -- forming a group while the layer is closing makes the game move us at once
   if LA.Closing() then return "closing" end
   if UnitOnTaxi("player") and not LA.Setting("hostWhileFlying") then return "flying" end
