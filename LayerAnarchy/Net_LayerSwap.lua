@@ -330,16 +330,19 @@ local function skipsUs(tag)
   return false
 end
 
+local NOT_NOW = { off = "o", recent = "s" }
+
 local function hostAsk(text, sender, key)
   local tag = parseTag(text)
   if not (tag and tag.zone) then return end
-  if not LA.Host.Can(sender, tag.zone) then return heard(sender, key, "-") end
+  local ok, why = LA.Host.Can(sender, tag.zone)
+  if not ok then return heard(sender, key, NOT_NOW[why] or "p") end
   if skipsUs(tag) then
     if tag.nots[1] == ourId() then whisper("same", sender) end
     return heard(sender, key, "s")
   end
   heard(sender, key, "h", true)
-  if not LA.Host.Invite(sender, NET.id) then heard(sender, key, "-", true) end
+  if not LA.Host.Invite(sender, NET.id) then heard(sender, key, "p", true) end
 end
 
 local function onWhisper(_, text, sender)
